@@ -1,6 +1,27 @@
 {
   "items": [
     {
+      "type": "video",
+      "src": "chase-video-1.mp4",
+      "thumb": "chase-video-1-thumb.jpg",
+      "title": "Chaser605: Grant & Jeremy flexing on the tornado",
+      "date": "2026-10-30"
+    },
+    {
+      "type": "video",
+      "src": "chase-video-2.mp4",
+      "thumb": "chase-video-2-thumb.jpg",
+      "title": "We chase snow storms so you don't have to",
+      "date": "2026-10-30"
+    },
+    {
+      "type": "video",
+      "src": "chase-video-3.mp4",
+      "thumb": "chase-video-3-thumb.jpg",
+      "title": "Wild guys wrangling tornados one at a time",
+      "date": "2026-10-30"
+    },
+    {
       "type": "image",
       "src": "wanted-poster.jpg",
       "thumb": "wanted-poster.jpg",
