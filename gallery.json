@@ -2,6 +2,13 @@
   "items": [
     {
       "type": "video",
+      "src": "chase-video-4.mp4",
+      "thumb": "chase-video-4-thumb.jpg",
+      "title": "WANTED: The unlicensed tornado chaser, live",
+      "date": "2026-10-30"
+    },
+    {
+      "type": "video",
       "src": "chase-video-1.mp4",
       "thumb": "chase-video-1-thumb.jpg",
       "title": "Chaser605: Grant & Jeremy flexing on the tornado",
