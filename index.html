@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chaser 605 — Storm Chasing Fun &amp; Weather Updates</title>
+<meta name="description" content="A just-for-fun storm chasing and weather site from Jeremy &amp; Grant. Live South Dakota weather, NWS alerts, and goofy photos and videos.">
+<meta property="og:title" content="Chaser 605">
+<meta property="og:description" content="Fun storm chasing &amp; weather updates from the 605.">
+<meta property="og:image" content="wanted-poster.jpg">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌪️</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Rye&family=Oswald:wght@400;600&family=Special+Elite&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="sky" aria-hidden="true"><div class="flash"></div></div>
+
+<header class="nav">
+  <a class="brand" href="#top">⚡ CHASER 605</a>
+  <nav>
+    <a href="#weather">Weather</a>
+    <a href="#gallery">Gallery</a>
+    <a href="#upload">Upload</a>
+    <a href="#about">About</a>
+  </nav>
+</header>
+
+<main id="top">
+  <section class="hero">
+    <p class="kicker">★ Notice to all citizens of the 605 ★</p>
+    <h1 class="rye">Chaser 605</h1>
+    <p class="tag">Storm chasing fun, weather updates &amp; questionable photography.</p>
+    <figure class="poster">
+      <picture>
+        <source srcset="wanted-poster.webp" type="image/webp">
+        <img src="wanted-poster.jpg" width="800" height="1200" alt="Wanted poster: DANGER — for chasing down tornadoes without a tornado license. A man in a gray t-shirt sips a chocolate drink while holding a blue-green one. If you see him let Chaser 605 know — they are fully certified. Use extreme caution when approaching.">
+      </picture>
+      <figcaption>Last seen holding two drinks and zero tornado licenses.</figcaption>
+    </figure>
+    <a class="btn" href="#weather">Check the sky ↓</a>
+  </section>
+
+  <section id="weather" class="panel">
+    <h2 class="rye">Weather Report</h2>
+    <p class="sub">Live from the National Weather Service · <span id="wx-place">Sioux Falls, SD</span></p>
+    <div id="alerts" class="alerts" aria-live="polite"><p class="muted">Loading South Dakota alerts…</p></div>
+    <div class="wx-grid">
+      <div class="card" id="wx-now"><p class="muted">Loading current conditions…</p></div>
+      <div class="card" id="wx-forecast"><p class="muted">Loading forecast…</p></div>
+    </div>
+    <p class="fine">Data: <a href="https://www.weather.gov/fsd/" target="_blank" rel="noopener">NWS Sioux Falls</a> via api.weather.gov. For fun only — for real severe-weather decisions, follow official NWS warnings.</p>
+  </section>
+
+  <section id="gallery" class="panel">
+    <h2 class="rye">The Gallery</h2>
+    <p class="sub">Photos &amp; videos from the chase (and the gas station).</p>
+    <div id="grid" class="grid" aria-live="polite"><p class="muted">Loading gallery…</p></div>
+  </section>
+
+  <section id="upload" class="panel">
+    <h2 class="rye">Upload Your Evidence</h2>
+    <div class="card upload">
+      <p>📸 Easy photo &amp; video uploads for Jeremy and Grant are <strong>coming soon</strong>.</p>
+      <button class="btn" type="button" disabled>Upload — Coming Soon</button>
+    </div>
+  </section>
+
+  <section id="about" class="panel">
+    <h2 class="rye">About This Outfit</h2>
+    <p class="about">Chaser 605 is a just-for-fun site by Jeremy and Grant, a friendly tip of the cowboy hat to our storm-chasing buddy. Weather updates, pictures, videos, and good times. The 605 is South Dakota's area code, so that's where our weather lives.</p>
+  </section>
+</main>
+
+<footer>
+  <p>⚡ All in fun! No tornadoes, chasers, or beverages were harmed in the making of this site. We're just a couple of friends who love weather.</p>
+  <p id="real-chaser" hidden>Want the real deal? Visit <a href="https://605chaser.com" target="_blank" rel="noopener">605chaser.com</a> — the real certified chaser.</p>
+  <p class="fine">Not affiliated with the NWS. Always follow official warnings. © <span id="yr"></span> Chaser 605</p>
+</footer>
+
+<div id="lightbox" class="lightbox" hidden role="dialog" aria-modal="true" aria-label="Media viewer">
+  <button class="lb-close" aria-label="Close">✕</button>
+  <button class="lb-nav prev" aria-label="Previous">‹</button>
+  <div class="lb-stage"></div>
+  <button class="lb-nav next" aria-label="Next">›</button>
+  <p class="lb-cap"></p>
+</div>
+<script src="main.js"></script>
+</body>
+</html>
