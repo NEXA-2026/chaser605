@@ -70,7 +70,29 @@ footer p{max-width:44rem;margin:.4rem auto}
 .lb-close,.lb-nav{position:absolute;background:#0008;color:#fff;border:2px solid #fff6;border-radius:50%;width:46px;height:46px;font-size:1.5rem;cursor:pointer}
 .lb-close{top:1rem;right:1rem}
 .lb-nav{top:50%;transform:translateY(-50%)}.prev{left:.6rem}.next{right:.6rem}
+/* radar */
+.radar-card{padding:.8rem}
+.radar-bar{display:flex;justify-content:space-between;align-items:center;gap:.8rem;flex-wrap:wrap;margin-bottom:.6rem}
+.radar-status{margin:0;font-size:1rem;flex:1 1 220px}
+.radar-status .muted{font-size:.85rem}
+.btn-sm{font-size:.85rem;padding:.4rem .9rem;border-width:2px;box-shadow:0 3px 0 #1a0f07;white-space:nowrap}
+.radar-map{height:min(520px,62vh);min-height:300px;border:4px solid var(--wood2);border-radius:6px;background:#0e1420;isolation:isolate;z-index:0;box-shadow:inset 0 0 30px #000a}
+.radar-controls{display:flex;align-items:center;gap:.8rem;margin-top:.7rem;flex-wrap:wrap}
+.radar-controls input[type=range]{flex:1 1 160px;min-width:120px;accent-color:var(--red)}
+.radar-time{font-family:'Special Elite',monospace;font-size:.95rem;min-width:11rem;text-align:right}
+.radar-fine{margin:.6rem 0 0}
+.radar-card .leaflet-container{font-family:'Oswald',system-ui,sans-serif;background:#0e1420}
+.radar-card .leaflet-container a{color:#0a5fa8}
+.radar-card .base-tiles{filter:invert(1) hue-rotate(195deg) brightness(.85) contrast(.9) saturate(.6)}
+.you-dot{display:block;width:18px;height:18px;border-radius:50%;background:var(--bolt);border:3px solid #1a0f07;box-shadow:0 0 0 0 #ffd84acc;animation:ping 2s infinite}
+@keyframes ping{70%{box-shadow:0 0 0 14px #ffd84a00}100%{box-shadow:0 0 0 0 #ffd84a00}}
+.leaflet-tooltip.you-tip{background:var(--bolt);color:#1a0f07;border:2px solid #1a0f07;font-weight:600;font-family:'Oswald',sans-serif;padding:1px 7px}
+.leaflet-tooltip-top.you-tip:before{border-top-color:#1a0f07}
+@media (prefers-reduced-motion:reduce){.you-dot{animation:none}}
 @media (max-width:720px){
+  .radar-map{height:55vh;min-height:280px}
+  .radar-time{text-align:left;min-width:0;flex:1 1 100%}
+  .radar-bar .btn{width:100%}
   .wx-grid{grid-template-columns:1fr}
   .nav{flex-direction:column;gap:.3rem;padding:.5rem}
   .nav nav{justify-content:center;gap:.8rem}
