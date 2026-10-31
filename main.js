@@ -147,7 +147,7 @@
       .then(function () { clearTimeout(t); });
   }
 
-  /* ---------- Live radar (Leaflet + RainViewer) + visitor location ---------- */
+  /* ---------- Live radar (Leaflet + RainViewer + HRRR forecast) + visitor location ---------- */
   function initRadar() {
     var statusEl = $('#radar-status'), timeEl = $('#radar-time'), playBtn = $('#radar-play'),
         slider = $('#radar-slider'), locBtn = $('#radar-locate');
@@ -164,7 +164,7 @@
     // OpenStreetMap base tiles, darkened with CSS (.base-tiles) to suit the stormy theme.
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 8, className: 'base-tiles',
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors | Radar &copy; <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a>'
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors | Radar &copy; <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a> | Forecast: NOAA HRRR via <a href="https://mesonet.agron.iastate.edu/" target="_blank" rel="noopener">Iowa Environmental Mesonet</a>'
     }).addTo(map);
     map.on('click', function () { map.scrollWheelZoom.enable(); });
     map.on('mouseout', function () { map.scrollWheelZoom.disable(); });
@@ -176,23 +176,43 @@
     }).addTo(map);
     marker.bindTooltip('You are here', { permanent: true, direction: 'top', offset: [0, -10], className: 'you-tip' });
 
-    /* --- radar frames (RainViewer free tier: past frames only, max tile zoom 7) --- */
-    var frames = [], layers = {}, cur = -1, playing = true, timer = null, host = '';
+    /* --- radar timeline: ~1 hr of observed radar (RainViewer) + ~90 min of HRRR model forecast (IEM) ---
+       RainViewer free tier: past frames only, max tile zoom 7.
+       IEM HRRR simulated reflectivity: 15-min steps, tiles at https://mesonet.agron.iastate.edu (CORS open, no key). */
+    var IEM = 'https://mesonet.agron.iastate.edu';
+    var frames = [], layers = {}, cur = -1, playing = true, timer = null, rvHost = '', nowIdx = -1;
+    var fcOk = true;        // is HRRR forecast usable for the current map location / service status?
+    var hrrrInit = null;    // model init time (ms) of the newest complete HRRR run
+    var rvPast = [];
+    var noteEl = $('#radar-note'), badge = $('#radar-badge'), mapEl = $('#radar-map'), sliderWrap = $('#radar-slider-wrap'), nowMark = $('#radar-now');
+    var STEP = 15 * 60000, FC_AHEAD = 90 * 60000, PAST_KEEP = 7; // 7 RainViewer frames = last ~60 min
+    function inHrrr(lat, lon) { return lat > 21 && lat < 53 && lon > -135 && lon < -60; } // HRRR CONUS domain (approx.)
     function frameUrl(f) {
-      // 512px tiles: tile z = map zoom - 1, so map zoom 8 requests z7 (the free-tier maximum).
-      return host + f.path + '/512/{z}/{x}/{y}/2/1_1.png';
+      if (f.kind === 'fc') { // 256px tiles, standard XYZ; F#### = forecast minutes after model init
+        var m = Math.round((f.time * 1000 - hrrrInit) / 60000);
+        return IEM + '/cache/tile.py/1.0.0/hrrr::REFD-F' + ('0000' + m).slice(-4) + '-' + utcStamp(hrrrInit) + '/{z}/{x}/{y}.png';
+      }
+      // RainViewer 512px tiles: tile z = map zoom - 1, so map zoom 8 requests z7 (free-tier max).
+      return rvHost + f.path + '/512/{z}/{x}/{y}/2/1_1.png';
+    }
+    function utcStamp(ms) {
+      var d = new Date(ms), z = function (n) { return ('0' + n).slice(-2); };
+      return d.getUTCFullYear() + z(d.getUTCMonth() + 1) + z(d.getUTCDate()) + z(d.getUTCHours()) + z(d.getUTCMinutes());
     }
     function getLayer(i) {
       if (layers[i]) return layers[i];
-      var l = L.tileLayer(frameUrl(frames[i]), {
-        tileSize: 512, zoomOffset: -1, maxNativeZoom: 8, maxZoom: 8, opacity: 0, className: 'radar-tiles', keepBuffer: 1
-      });
+      var f = frames[i], opts = f.kind === 'fc'
+        ? { tileSize: 256, maxNativeZoom: 7, maxZoom: 8, opacity: 0, className: 'radar-tiles forecast-tiles', keepBuffer: 1 }
+        : { tileSize: 512, zoomOffset: -1, maxNativeZoom: 8, maxZoom: 8, opacity: 0, className: 'radar-tiles', keepBuffer: 1 };
+      var l = L.tileLayer(frameUrl(f), opts);
       layers[i] = l; l.addTo(map); return l;
     }
-    function fmtTime(t) {
-      var d = new Date(t * 1000), mins = Math.max(0, Math.round((Date.now() - d.getTime()) / 60000));
-      var ago = mins < 2 ? 'just now' : mins < 90 ? mins + ' min ago' : (mins / 60).toFixed(1) + ' hr ago';
-      return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + ' · ' + ago;
+    function clock(t) { return new Date(t * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
+    function fmtTime(f) {
+      var diff = Math.round((f.time * 1000 - Date.now()) / 60000);
+      if (f.kind === 'fc') return clock(f.time) + ' (forecast) · +' + Math.max(diff, 1) + ' min';
+      var mins = Math.max(0, -diff);
+      return clock(f.time) + ' · ' + (mins < 2 ? 'just now' : mins < 90 ? mins + ' min ago' : (mins / 60).toFixed(1) + ' hr ago');
     }
     function showFrame(i, done) {
       var l = getLayer(i), finished = false;
@@ -201,7 +221,9 @@
         if (cur !== i) {
           Object.keys(layers).forEach(function (k) { if (+k !== i) layers[k].setOpacity(0); });
           l.setOpacity(0.75); cur = i;
-          timeEl.textContent = fmtTime(frames[i].time); slider.value = i;
+          var fc = frames[i].kind === 'fc';
+          timeEl.textContent = fmtTime(frames[i]); slider.value = i;
+          badge.hidden = !fc; mapEl.classList.toggle('is-forecast', fc); timeEl.classList.toggle('is-forecast', fc);
         }
         done && done();
       };
@@ -213,7 +235,7 @@
       if (!playing || !frames.length) return;
       var next = (cur + 1) % frames.length;
       showFrame(next, function () {
-        timer = setTimeout(loop, next === frames.length - 1 ? 1800 : 550);
+        timer = setTimeout(loop, next === frames.length - 1 ? 1800 : next === nowIdx ? 1100 : frames[next].kind === 'fc' ? 700 : 500);
       });
     }
     function setPlaying(p) {
@@ -227,22 +249,63 @@
     playBtn.addEventListener('click', function () { setPlaying(!playing); });
     slider.addEventListener('input', function () { setPlaying(false); showFrame(+slider.value); });
 
+    // Build the frame list (past + forecast) and (re)start playback.
+    function buildTimeline() {
+      if (!rvPast.length) return;
+      var now = Date.now(), ll = marker.getLatLng();
+      var useFc = fcOk && hrrrInit && inHrrr(ll.lat, ll.lng);
+      var past = rvPast.filter(function (f) { return f.time * 1000 <= now + 60000; }).slice(-PAST_KEEP)
+        .map(function (f) { return { kind: 'past', time: f.time, path: f.path }; });
+      var list = past.slice(); nowIdx = list.length - 1;
+      if (useFc) {
+        // Forecast valid times: every 15 min from the next quarter-hour after now, through now + 90 min.
+        for (var t = Math.ceil(now / STEP) * STEP; t <= now + FC_AHEAD; t += STEP) {
+          var mins = (t - hrrrInit) / 60000;
+          if (mins >= 0 && mins <= 1080) list.push({ kind: 'fc', time: t / 1000 });
+        }
+      }
+      var nFc = list.length - past.length;
+      if (!useFc) {
+        noteEl.hidden = false;
+        noteEl.textContent = fcOk && hrrrInit && !inHrrr(ll.lat, ll.lng)
+          ? 'Forecast radar covers the continental US only — showing past radar for your area.'
+          : 'Forecast radar is unavailable right now — showing past radar only.';
+      } else { noteEl.hidden = true; }
+      clearTimeout(timer);
+      Object.keys(layers).forEach(function (k) { map.removeLayer(layers[k]); }); layers = {}; cur = -1;
+      frames = list;
+      slider.max = frames.length - 1; slider.disabled = false; playBtn.disabled = false;
+      // colour the slider: observed portion vs forecast portion, and place the NOW marker
+      var n = frames.length, pct = n > 1 ? nowIdx / (n - 1) * 100 : 100;
+      sliderWrap.style.setProperty('--now', pct + '%');
+      sliderWrap.classList.toggle('has-fc', nFc > 0);
+      nowMark.hidden = nFc === 0;
+      nowMark.style.left = 'calc(' + pct + '% + ' + (9 - 18 * pct / 100) + 'px)';
+      if (playing) loop(); else showFrame(nowIdx);
+    }
     function loadFrames() {
-      return fetch('https://api.rainviewer.com/public/weather-maps.json', { cache: 'no-store' })
+      var rv = fetch('https://api.rainviewer.com/public/weather-maps.json', { cache: 'no-store' })
         .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
         .then(function (d) {
           var past = d && d.radar && d.radar.past;
           if (!past || !past.length) throw new Error('no frames');
-          clearTimeout(timer);
-          Object.keys(layers).forEach(function (k) { map.removeLayer(layers[k]); }); layers = {}; cur = -1;
-          host = d.host || 'https://tilecache.rainviewer.com'; frames = past;
-          slider.max = frames.length - 1; slider.disabled = false; playBtn.disabled = false;
-          if (playing) loop(); else showFrame(frames.length - 1);
-        })
-        .catch(function () {
-          timeEl.textContent = 'Radar data unavailable right now.';
-          playBtn.disabled = true; slider.disabled = true;
+          rvHost = d.host || 'https://tilecache.rainviewer.com'; rvPast = past;
         });
+      // Newest complete HRRR run: the 18-hr file is written last, so its init time is safe to use.
+      var hr = fetch(IEM + '/data/gis/images/4326/hrrr/refd_1080.json', { cache: 'no-store' })
+        .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+        .then(function (j) {
+          var t = Date.parse(j.model_init_utc);
+          if (!isFinite(t) || Date.now() - t > 12 * 3600000) throw new Error('stale');
+          hrrrInit = t; fcOk = true;
+        }).catch(function () { fcOk = false; });
+      return Promise.all([rv.then(function () { return true; }, function () { return false; }), hr]).then(function (res) {
+        if (!res[0]) {
+          timeEl.textContent = 'Radar data unavailable right now.';
+          playBtn.disabled = true; slider.disabled = true; return;
+        }
+        buildTimeline();
+      });
     }
     loadFrames();
     setInterval(loadFrames, 5 * 60 * 1000);
@@ -251,8 +314,10 @@
     var locToken = 0, permNote = '';
     function applyLocation(lat, lon, how, guessedPlace) {
       var token = ++locToken;
+      var hadFc = frames.some(function (f) { return f.kind === 'fc'; });
       map.setView([lat, lon], ZOOM);
       marker.setLatLng([lat, lon]);
+      if (rvPast.length && hrrrInit !== null && hadFc !== inHrrr(lat, lon)) buildTimeline();
       marker.setTooltipContent(how === 'default' ? 'Sioux Falls (default)' : 'You are here');
       var describe = function (place, fromNws) {
         if (token !== locToken) return;
@@ -262,7 +327,8 @@
       describe(guessedPlace || (how === 'default' ? 'Sioux Falls, SD' : 'your area'));
       if (how === 'default') { return; }
       // Update the forecast to the visitor's spot (NWS covers the US). Alerts stay SD-wide.
-      loadWeather(lat, lon, how === 'ip' ? 'near you (approx.)' : 'near you').then(function (place) {
+      var inUS = lat > 17 && lat < 72 && lon > -180 && lon < -64; // skip the NWS call (404) for clearly non-US spots
+      (inUS ? loadWeather(lat, lon, how === 'ip' ? 'near you (approx.)' : 'near you') : Promise.reject(new Error('non-US'))).then(function (place) {
         if (place) describe(place, true);
       }).catch(function () {
         // Outside NWS coverage: keep Sioux Falls forecast, radar still shows the visitor's area.

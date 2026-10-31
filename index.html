@@ -57,19 +57,23 @@
 
   <section id="radar" class="panel">
     <h2 class="rye">Live Radar</h2>
-    <p class="sub">Animated precipitation radar for your neck of the woods.</p>
+    <p class="sub">Animated radar for your neck of the woods — what just happened and what the model says is coming next.</p>
     <div class="card radar-card">
       <div class="radar-bar">
         <p id="radar-status" class="radar-status" aria-live="polite">📍 Finding your location…</p>
         <button id="radar-locate" class="btn btn-sm" type="button">📍 Use my location</button>
       </div>
-      <div id="radar-map" class="radar-map" role="region" aria-label="Animated weather radar map"></div>
+      <div class="radar-mapwrap">
+        <div id="radar-map" class="radar-map" role="region" aria-label="Animated weather radar map"></div>
+        <span id="radar-badge" class="radar-badge" hidden>⚡ FORECAST</span>
+      </div>
+      <p id="radar-note" class="radar-note" hidden></p>
       <div class="radar-controls">
         <button id="radar-play" class="btn btn-sm" type="button" aria-pressed="false" disabled>⏸ Pause</button>
-        <input id="radar-slider" type="range" min="0" max="0" value="0" step="1" aria-label="Radar frame" disabled>
+        <div id="radar-slider-wrap" class="slider-wrap"><input id="radar-slider" type="range" min="0" max="0" value="0" step="1" aria-label="Radar frame" disabled><span id="radar-now" class="now-mark" hidden>NOW</span></div>
         <span id="radar-time" class="radar-time">Loading radar…</span>
       </div>
-      <p class="fine radar-fine">Past ~2 hours of radar, updated every ~10 min. Radar from <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a>; blue = light rain, deeper colors = heavier. Location stays in your browser and is never stored. On mobile, use two fingers to move the map.</p>
+      <p class="fine radar-fine">Last hour of observed radar (<a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a>), then the next ~90 minutes of <strong>forecast</strong> (amber slider). The forecast is a computer model estimate (NOAA HRRR, via the <a href="https://mesonet.agron.iastate.edu/" target="_blank" rel="noopener">Iowa Environmental Mesonet</a>), not a guarantee — it can miss timing and placement, so follow official NWS warnings. Forecast colors differ from observed radar: green/yellow = light to moderate, red/purple = intense. Location stays in your browser and is never stored. On mobile, use two fingers to move the map.</p>
     </div>
   </section>
 
