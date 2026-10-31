@@ -57,7 +57,7 @@
 
   <section id="radar" class="panel">
     <h2 class="rye">Live Radar</h2>
-    <p class="sub">Animated radar for your neck of the woods — what just happened and what the model says is coming next.</p>
+    <p class="sub">Animated radar for your neck of the woods — what just happened and where it's headed next.</p>
     <div class="card radar-card">
       <div class="radar-bar">
         <p id="radar-status" class="radar-status" aria-live="polite">📍 Finding your location…</p>
@@ -73,7 +73,7 @@
         <div id="radar-slider-wrap" class="slider-wrap"><input id="radar-slider" type="range" min="0" max="0" value="0" step="1" aria-label="Radar frame" disabled><span id="radar-now" class="now-mark" hidden>NOW</span></div>
         <span id="radar-time" class="radar-time">Loading radar…</span>
       </div>
-      <p class="fine radar-fine">Last hour of observed radar (<a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a>), then the next ~90 minutes of <strong>forecast</strong> (amber slider). The forecast is a computer model estimate (NOAA HRRR, via the <a href="https://mesonet.agron.iastate.edu/" target="_blank" rel="noopener">Iowa Environmental Mesonet</a>), not a guarantee — it can miss timing and placement, so follow official NWS warnings. Forecast colors differ from observed radar: green/yellow = light to moderate, red/purple = intense. Location stays in your browser and is never stored. On mobile, use two fingers to move the map.</p>
+      <p class="fine radar-fine">Last hour of observed radar from <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a>, then a <strong>forecast</strong> for the next hour (amber slider). The forecast just slides the latest radar forward along how the storms have been moving — a simple estimate, not a guarantee. Storms grow, fade, split and change direction, so it fades out the further ahead it looks. Always follow official NWS warnings. If there isn't enough rain nearby to track, steering winds from <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> are used. Location stays in your browser and is never stored. On mobile, use two fingers to move the map.</p>
     </div>
   </section>
 

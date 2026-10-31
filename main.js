@@ -147,7 +147,7 @@
       .then(function () { clearTimeout(t); });
   }
 
-  /* ---------- Live radar (Leaflet + RainViewer + HRRR forecast) + visitor location ---------- */
+  /* ---------- Live radar (Leaflet + RainViewer, with motion-extrapolation nowcast) + visitor location ---------- */
   function initRadar() {
     var statusEl = $('#radar-status'), timeEl = $('#radar-time'), playBtn = $('#radar-play'),
         slider = $('#radar-slider'), locBtn = $('#radar-locate');
@@ -164,7 +164,7 @@
     // OpenStreetMap base tiles, darkened with CSS (.base-tiles) to suit the stormy theme.
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 8, className: 'base-tiles',
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors | Radar &copy; <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a> | Forecast: NOAA HRRR via <a href="https://mesonet.agron.iastate.edu/" target="_blank" rel="noopener">Iowa Environmental Mesonet</a>'
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors | Radar &copy; <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a>'
     }).addTo(map);
     map.on('click', function () { map.scrollWheelZoom.enable(); });
     map.on('mouseout', function () { map.scrollWheelZoom.disable(); });
@@ -176,35 +176,146 @@
     }).addTo(map);
     marker.bindTooltip('You are here', { permanent: true, direction: 'top', offset: [0, -10], className: 'you-tip' });
 
-    /* --- radar timeline: ~1 hr of observed radar (RainViewer) + ~90 min of HRRR model forecast (IEM) ---
-       RainViewer free tier: past frames only, max tile zoom 7.
-       IEM HRRR simulated reflectivity: 15-min steps, tiles at https://mesonet.agron.iastate.edu (CORS open, no key). */
-    var IEM = 'https://mesonet.agron.iastate.edu';
-    var frames = [], layers = {}, cur = -1, playing = true, timer = null, rvHost = '', nowIdx = -1;
-    var fcOk = true;        // is HRRR forecast usable for the current map location / service status?
-    var hrrrInit = null;    // model init time (ms) of the newest complete HRRR run
-    var rvPast = [];
+    /* --- radar timeline: ~1 hr of observed radar (RainViewer) + a ~60 min motion-extrapolation nowcast ---
+       RainViewer free tier: past frames only, max tile zoom 7. The "forecast" frames reuse the newest observed
+       RainViewer frame (same tiles, same colours), slid along the storm motion estimated from the last few frames. */
+    var frames = [], layers = {}, cur = -1, playing = true, timer = null, rvHost = '', nowIdx = -1, buildTok = 0;
+    var rvPast = [], lastBuildLL = null, built = false;
     var noteEl = $('#radar-note'), badge = $('#radar-badge'), mapEl = $('#radar-map'), sliderWrap = $('#radar-slider-wrap'), nowMark = $('#radar-now');
-    var STEP = 15 * 60000, FC_AHEAD = 90 * 60000, PAST_KEEP = 7; // 7 RainViewer frames = last ~60 min
-    function inHrrr(lat, lon) { return lat > 21 && lat < 53 && lon > -135 && lon < -60; } // HRRR CONUS domain (approx.)
-    function frameUrl(f) {
-      if (f.kind === 'fc') { // 256px tiles, standard XYZ; F#### = forecast minutes after model init
-        var m = Math.round((f.time * 1000 - hrrrInit) / 60000);
-        return IEM + '/cache/tile.py/1.0.0/hrrr::REFD-F' + ('0000' + m).slice(-4) + '-' + utcStamp(hrrrInit) + '/{z}/{x}/{y}.png';
+    var PAST_KEEP = 7;          // 7 RainViewer frames = last ~60 min
+    var FC_STEP = 10, FC_MAX = 60; // forecast frames every 10 min out to +60 min
+    var MAX_OP = 0.75;
+    var WORLD_PX = 16384;       // world width in px at the estimation scale (512px tiles at z5 == 256px tiles at z6)
+    var EST_Z = 5, EST_TILE = 512, EST_DS = 2;
+
+    function tileUrl(path, size, z, x, y) { return rvHost + path + '/' + size + '/' + z + '/' + x + '/' + y + '/2/1_1.png'; }
+    var imgCache = {};
+    function loadImg(url) { // CORS-enabled load (RainViewer sends Access-Control-Allow-Origin: *), cached per URL
+      if (!imgCache[url]) {
+        imgCache[url] = new Promise(function (res) {
+          var im = new Image(); im.crossOrigin = 'anonymous';
+          im.onload = function () { res(im); }; im.onerror = function () { res(null); };
+          im.src = url;
+        });
       }
-      // RainViewer 512px tiles: tile z = map zoom - 1, so map zoom 8 requests z7 (free-tier max).
-      return rvHost + f.path + '/512/{z}/{x}/{y}/2/1_1.png';
+      return imgCache[url];
     }
-    function utcStamp(ms) {
-      var d = new Date(ms), z = function (n) { return ('0' + n).slice(-2); };
-      return d.getUTCFullYear() + z(d.getUTCMonth() + 1) + z(d.getUTCDate()) + z(d.getUTCHours()) + z(d.getUTCMinutes());
+
+    /* Forecast layer: draws the newest observed frame translated by (sx, sy) world-fractions. Source tiles are the
+       same 512px RainViewer tiles the past frames use, so the colours are identical. */
+    var ShiftLayer = L.GridLayer.extend({
+      initialize: function (path, shift, options) { L.GridLayer.prototype.initialize.call(this, options); this._path = path; this._shift = shift; },
+      createTile: function (c, done) {
+        var S = 512, zr = c.z - 1, n = Math.pow(2, zr), k = 256 * Math.pow(2, c.z);
+        var cv = L.DomUtil.create('canvas', 'leaflet-tile'); cv.width = cv.height = S;
+        var ox = c.x * S - this._shift.x * k, oy = c.y * S - this._shift.y * k, ctx = cv.getContext('2d'), jobs = [], self = this;
+        for (var ty = Math.floor(oy / S); ty <= Math.floor((oy + S - 1) / S); ty++) {
+          for (var tx = Math.floor(ox / S); tx <= Math.floor((ox + S - 1) / S); tx++) {
+            if (ty < 0 || ty >= n) continue;
+            (function (tx, ty) {
+              jobs.push(loadImg(tileUrl(self._path, 512, zr, ((tx % n) + n) % n, ty)).then(function (im) {
+                if (im) ctx.drawImage(im, tx * S - ox, ty * S - oy, S, S);
+              }));
+            })(tx, ty);
+          }
+        }
+        Promise.all(jobs).then(function () { done(null, cv); });
+        return cv;
+      }
+    });
+
+    /* ---- motion estimation: global block matching between observed frames ---- */
+    function lonlat2tile(lat, lon, z) {
+      var n = Math.pow(2, z), r = lat * Math.PI / 180;
+      return { x: (lon + 180) / 360 * n, y: (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * n };
+    }
+    function intensityGrid(path, tx0, ty0) { // 2x2 tiles -> downsampled alpha-intensity grid
+      var size = 2 * EST_TILE, n = Math.pow(2, EST_Z), cv = document.createElement('canvas');
+      cv.width = cv.height = size; var ctx = cv.getContext('2d');
+      var jobs = [];
+      for (var j = 0; j < 2; j++) for (var i = 0; i < 2; i++) (function (i, j) {
+        jobs.push(loadImg(tileUrl(path, 512, EST_Z, ((tx0 + i) % n + n) % n, ty0 + j)).then(function (im) {
+          if (im) ctx.drawImage(im, i * EST_TILE, j * EST_TILE);
+        }));
+      })(i, j);
+      return Promise.all(jobs).then(function () {
+        var px = ctx.getImageData(0, 0, size, size).data, g = size / EST_DS, out = new Float32Array(g * g), cnt = 0;
+        for (var y = 0; y < g; y++) for (var x = 0; x < g; x++) {
+          var s = 0;
+          for (var dy = 0; dy < EST_DS; dy++) for (var dx = 0; dx < EST_DS; dx++) s += px[((y * EST_DS + dy) * size + x * EST_DS + dx) * 4 + 3];
+          var v = s / (EST_DS * EST_DS * 255); out[y * g + x] = v; if (v > 0.05) cnt++;
+        }
+        return { g: g, d: out, count: cnt };
+      });
+    }
+    // Best translation (cells) taking grid A onto grid B, with sub-cell refinement; score is a 0..1 correlation.
+    function matchShift(A, B, R) {
+      var g = A.g, ia = [], va = [], ea = 0, eb = 0, i;
+      for (i = 0; i < A.d.length; i++) { if (A.d[i] > 0.05) { ia.push(i); va.push(A.d[i]); ea += A.d[i] * A.d[i]; } }
+      for (i = 0; i < B.d.length; i++) eb += B.d[i] * B.d[i];
+      if (!ia.length || !eb) return null;
+      var norm = Math.sqrt(ea * eb), W = 2 * R + 1, sc = new Float32Array(W * W), best = -1, bx = 0, by = 0;
+      for (var sy = -R; sy <= R; sy++) for (var sx = -R; sx <= R; sx++) {
+        var s = 0;
+        for (var k = 0; k < ia.length; k++) {
+          var idx = ia[k], y = (idx / g) | 0, x = idx - y * g, nx = x + sx, ny = y + sy;
+          if (nx < 0 || ny < 0 || nx >= g || ny >= g) continue;
+          s += va[k] * B.d[ny * g + nx];
+        }
+        s /= norm; sc[(sy + R) * W + sx + R] = s;
+        if (s > best) { best = s; bx = sx; by = sy; }
+      }
+      var refine = function (m, c, p) { var den = m - 2 * c + p; return den < 0 ? Math.max(-0.5, Math.min(0.5, 0.5 * (m - p) / den)) : 0; };
+      var at = function (x, y) { return (x < -R || x > R || y < -R || y > R) ? 0 : sc[(y + R) * W + x + R]; };
+      return { dx: bx + refine(at(bx - 1, by), best, at(bx + 1, by)), dy: by + refine(at(bx, by - 1), best, at(bx, by + 1)), score: best };
+    }
+    // Returns {vx, vy, method} in estimation-scale px per minute, or null.
+    function estimateMotion(lat, lon) {
+      var obs = rvPast.filter(function (f) { return f.time * 1000 <= Date.now() + 60000; }).slice(-4);
+      if (obs.length < 3) return Promise.resolve(null);
+      var t = lonlat2tile(lat, lon, EST_Z), n = Math.pow(2, EST_Z);
+      var tx0 = Math.floor(t.x - 0.5), ty0 = Math.max(0, Math.min(n - 2, Math.floor(t.y - 0.5)));
+      return Promise.all(obs.map(function (f) { return intensityGrid(f.path, tx0, ty0); })).then(function (grids) {
+        var last = grids.length - 1, B = grids[last];
+        if (B.count < 150) return null; // too little rain nearby to track
+        var sumx = 0, sumy = 0, sumw = 0;
+        for (var lag = 1; lag <= last; lag++) {
+          var A = grids[last - lag];
+          if (A.count < 100) continue;
+          var dtMin = (obs[last].time - obs[last - lag].time) / 60;
+          var m = matchShift(A, B, 6 + 5 * lag);
+          if (!m || m.score < 0.35) continue;
+          var w = m.score * m.score * lag; // longer baselines are more precise
+          sumx += m.dx * EST_DS / dtMin * w; sumy += m.dy * EST_DS / dtMin * w; sumw += w;
+        }
+        if (!sumw) return null;
+        return { vx: sumx / sumw, vy: sumy / sumw, method: 'radar' };
+      });
+    }
+    // Fallback: 700 hPa steering wind at the visitor's location (Open-Meteo, free, no key).
+    function windMotion(lat, lon) {
+      return fetchJSONTimeout('https://api.open-meteo.com/v1/forecast?latitude=' + lat.toFixed(2) + '&longitude=' + lon.toFixed(2) +
+        '&hourly=wind_speed_700hPa,wind_direction_700hPa&wind_speed_unit=kmh&forecast_days=2&timezone=GMT', 7000).then(function (j) {
+        var h = j.hourly, now = Date.now(), bi = -1, bd = 1e18;
+        h.time.forEach(function (s, i) { var d = Math.abs(Date.parse(s + 'Z') - now); if (d < bd) { bd = d; bi = i; } });
+        var spd = h.wind_speed_700hPa[bi], from = h.wind_direction_700hPa[bi];
+        if (spd == null || from == null) throw new Error('no wind');
+        var rad = from * Math.PI / 180, east = -spd * Math.sin(rad), north = -spd * Math.cos(rad); // km/h, direction the air moves toward
+        var mpp = 40075016.7 / WORLD_PX * Math.cos(lat * Math.PI / 180); // ground metres per estimation px
+        return { vx: east * 1000 / 60 / mpp, vy: -north * 1000 / 60 / mpp, method: 'wind' };
+      });
     }
     function getLayer(i) {
       if (layers[i]) return layers[i];
-      var f = frames[i], opts = f.kind === 'fc'
-        ? { tileSize: 256, maxNativeZoom: 7, maxZoom: 8, opacity: 0, className: 'radar-tiles forecast-tiles', keepBuffer: 1 }
-        : { tileSize: 512, zoomOffset: -1, maxNativeZoom: 8, maxZoom: 8, opacity: 0, className: 'radar-tiles', keepBuffer: 1 };
-      var l = L.tileLayer(frameUrl(f), opts);
+      var f = frames[i], l;
+      if (f.kind === 'fc') {
+        l = new ShiftLayer(f.path, f.shift, { tileSize: 512, maxZoom: 8, opacity: 0, className: 'radar-tiles', keepBuffer: 1 });
+      } else {
+        // RainViewer 512px tiles: tile z = map zoom - 1, so map zoom 8 requests z7 (free-tier max).
+        l = L.tileLayer(rvHost + f.path + '/512/{z}/{x}/{y}/2/1_1.png', {
+          tileSize: 512, zoomOffset: -1, maxNativeZoom: 8, maxZoom: 8, opacity: 0, className: 'radar-tiles', keepBuffer: 1, crossOrigin: 'anonymous'
+        });
+      }
       layers[i] = l; l.addTo(map); return l;
     }
     function clock(t) { return new Date(t * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
@@ -220,7 +331,7 @@
         if (finished) return; finished = true;
         if (cur !== i) {
           Object.keys(layers).forEach(function (k) { if (+k !== i) layers[k].setOpacity(0); });
-          l.setOpacity(0.75); cur = i;
+          l.setOpacity(frames[i].op || MAX_OP); cur = i;
           var fc = frames[i].kind === 'fc';
           timeEl.textContent = fmtTime(frames[i]); slider.value = i;
           badge.hidden = !fc; mapEl.classList.toggle('is-forecast', fc); timeEl.classList.toggle('is-forecast', fc);
@@ -249,75 +360,85 @@
     playBtn.addEventListener('click', function () { setPlaying(!playing); });
     slider.addEventListener('input', function () { setPlaying(false); showFrame(+slider.value); });
 
-    // Build the frame list (past + forecast) and (re)start playback.
+    // Build the frame list (observed + projected) and (re)start playback.
     function buildTimeline() {
       if (!rvPast.length) return;
-      var now = Date.now(), ll = marker.getLatLng();
-      var useFc = fcOk && hrrrInit && inHrrr(ll.lat, ll.lng);
-      var past = rvPast.filter(function (f) { return f.time * 1000 <= now + 60000; }).slice(-PAST_KEEP)
-        .map(function (f) { return { kind: 'past', time: f.time, path: f.path }; });
-      var list = past.slice(); nowIdx = list.length - 1;
-      if (useFc) {
-        // Forecast valid times: every 15 min from the next quarter-hour after now, through now + 90 min.
-        for (var t = Math.ceil(now / STEP) * STEP; t <= now + FC_AHEAD; t += STEP) {
-          var mins = (t - hrrrInit) / 60000;
-          if (mins >= 0 && mins <= 1080) list.push({ kind: 'fc', time: t / 1000 });
+      var tok = ++buildTok, ll = marker.getLatLng(); lastBuildLL = ll;
+      var motionP = estimateMotion(ll.lat, ll.lng).catch(function () { return null; }).then(function (m) {
+        return m || windMotion(ll.lat, ll.lng).catch(function () { return null; });
+      });
+      var timeout = new Promise(function (res) { setTimeout(function () { res(null); }, 9000); });
+      Promise.race([motionP, timeout]).then(function (motion) {
+        if (tok !== buildTok) return;
+        var now = Date.now();
+        var past = rvPast.filter(function (f) { return f.time * 1000 <= now + 60000; }).slice(-PAST_KEEP)
+          .map(function (f) { return { kind: 'past', time: f.time, path: f.path }; });
+        if (!past.length) return;
+        var latest = past[past.length - 1], list = past.slice(); nowIdx = list.length - 1;
+        if (motion && isFinite(motion.vx) && isFinite(motion.vy)) {
+          var spdKmh = Math.sqrt(motion.vx * motion.vx + motion.vy * motion.vy) * 60 * 2446 * Math.cos(ll.lat * Math.PI / 180) / 1000;
+          var cap = spdKmh > 130 ? 130 / spdKmh : 1; // sanity cap on speed
+          for (var m = FC_STEP; m <= FC_MAX + 30; m += FC_STEP) {
+            var validMs = (latest.time + m * 60) * 1000;
+            if (validMs <= now - 60000 || validMs > now + FC_MAX * 60000 + 5 * 60000) continue; // only from now to ~+60 min
+            var ahead = Math.max(0, (validMs - now) / 60000);
+            list.push({
+              kind: 'fc', time: validMs / 1000, path: latest.path, op: MAX_OP * (1 - 0.45 * Math.min(1, ahead / FC_MAX)),
+              shift: { x: motion.vx * cap * m / WORLD_PX, y: motion.vy * cap * m / WORLD_PX }
+            });
+          }
         }
-      }
-      var nFc = list.length - past.length;
-      if (!useFc) {
-        noteEl.hidden = false;
-        noteEl.textContent = fcOk && hrrrInit && !inHrrr(ll.lat, ll.lng)
-          ? 'Forecast radar covers the continental US only — showing past radar for your area.'
-          : 'Forecast radar is unavailable right now — showing past radar only.';
-      } else { noteEl.hidden = true; }
-      clearTimeout(timer);
-      Object.keys(layers).forEach(function (k) { map.removeLayer(layers[k]); }); layers = {}; cur = -1;
-      frames = list;
-      slider.max = frames.length - 1; slider.disabled = false; playBtn.disabled = false;
-      // colour the slider: observed portion vs forecast portion, and place the NOW marker
-      var n = frames.length, pct = n > 1 ? nowIdx / (n - 1) * 100 : 100;
-      sliderWrap.style.setProperty('--now', pct + '%');
-      sliderWrap.classList.toggle('has-fc', nFc > 0);
-      nowMark.hidden = nFc === 0;
-      nowMark.style.left = 'calc(' + pct + '% + ' + (9 - 18 * pct / 100) + 'px)';
-      if (playing) loop(); else showFrame(nowIdx);
+        var nFc = list.length - past.length;
+        mapEl.setAttribute('data-motion', motion ? motion.method + ' ' + motion.vx.toFixed(2) + ',' + motion.vy.toFixed(2) : 'none');
+        if (!nFc) {
+          noteEl.hidden = false;
+          noteEl.textContent = 'Couldn\'t work out which way the storms are moving right now — showing observed radar only.';
+        } else if (motion.method === 'wind') {
+          noteEl.hidden = false;
+          noteEl.textContent = 'Not much rain nearby to track, so the forecast slides radar along the regional steering winds (700 hPa, from Open-Meteo).';
+        } else { noteEl.hidden = true; }
+        clearTimeout(timer);
+        Object.keys(layers).forEach(function (k) { map.removeLayer(layers[k]); }); layers = {}; cur = -1;
+        frames = list; built = true;
+        slider.max = frames.length - 1; slider.disabled = false; playBtn.disabled = false;
+        var n = frames.length, pct = n > 1 ? nowIdx / (n - 1) * 100 : 100;
+        sliderWrap.style.setProperty('--now', pct + '%');
+        sliderWrap.classList.toggle('has-fc', nFc > 0);
+        nowMark.hidden = nFc === 0;
+        nowMark.style.left = 'calc(' + pct + '% + ' + (9 - 18 * pct / 100) + 'px)';
+        if (playing) loop(); else showFrame(nowIdx);
+      });
     }
     function loadFrames() {
-      var rv = fetch('https://api.rainviewer.com/public/weather-maps.json', { cache: 'no-store' })
+      return fetch('https://api.rainviewer.com/public/weather-maps.json', { cache: 'no-store' })
         .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
         .then(function (d) {
           var past = d && d.radar && d.radar.past;
           if (!past || !past.length) throw new Error('no frames');
           rvHost = d.host || 'https://tilecache.rainviewer.com'; rvPast = past;
-        });
-      // Newest complete HRRR run: the 18-hr file is written last, so its init time is safe to use.
-      var hr = fetch(IEM + '/data/gis/images/4326/hrrr/refd_1080.json', { cache: 'no-store' })
-        .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
-        .then(function (j) {
-          var t = Date.parse(j.model_init_utc);
-          if (!isFinite(t) || Date.now() - t > 12 * 3600000) throw new Error('stale');
-          hrrrInit = t; fcOk = true;
-        }).catch(function () { fcOk = false; });
-      return Promise.all([rv.then(function () { return true; }, function () { return false; }), hr]).then(function (res) {
-        if (!res[0]) {
+          buildTimeline();
+        })
+        .catch(function () {
+          if (built) return; // keep showing what we have
           timeEl.textContent = 'Radar data unavailable right now.';
-          playBtn.disabled = true; slider.disabled = true; return;
-        }
-        buildTimeline();
-      });
+          playBtn.disabled = true; slider.disabled = true;
+        });
     }
     loadFrames();
     setInterval(loadFrames, 5 * 60 * 1000);
+    // Called when the visitor's location changes: re-estimate motion if they moved far from the last estimate.
+    function relocateTimeline(lat, lon) {
+      if (!built || !lastBuildLL) return;
+      if (map.distance ? L.latLng(lat, lon).distanceTo(lastBuildLL) > 250000 : true) buildTimeline();
+    }
 
     /* --- location: device GPS -> IP lookup -> Sioux Falls --- */
     var locToken = 0, permNote = '';
     function applyLocation(lat, lon, how, guessedPlace) {
       var token = ++locToken;
-      var hadFc = frames.some(function (f) { return f.kind === 'fc'; });
       map.setView([lat, lon], ZOOM);
       marker.setLatLng([lat, lon]);
-      if (rvPast.length && hrrrInit !== null && hadFc !== inHrrr(lat, lon)) buildTimeline();
+      relocateTimeline(lat, lon);
       marker.setTooltipContent(how === 'default' ? 'Sioux Falls (default)' : 'You are here');
       var describe = function (place, fromNws) {
         if (token !== locToken) return;
