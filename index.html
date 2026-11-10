@@ -22,6 +22,7 @@
   <a class="brand" href="#top">⚡ CHASER 605</a>
   <nav>
     <a href="#weather">Weather</a>
+    <a href="#snow">Snow</a>
     <a href="#radar">Radar</a>
     <a href="#gallery">Gallery</a>
     <a href="#upload">Upload</a>
@@ -53,6 +54,13 @@
       <div class="card" id="wx-forecast"><p class="muted">Loading forecast…</p></div>
     </div>
     <p class="fine">Data: <a href="https://www.weather.gov/fsd/" target="_blank" rel="noopener">NWS Sioux Falls</a> via api.weather.gov. For fun only — for real severe-weather decisions, follow official NWS warnings.</p>
+  </section>
+
+  <section id="snow" class="panel">
+    <h2 class="rye">Snow Outlook</h2>
+    <p class="sub">How much snow has fallen, what's normal, and what's coming · <span id="snow-place">Finding your spot…</span></p>
+    <div id="snow-body" aria-live="polite"><div class="card"><p class="muted">❄️ Counting snowflakes…</p></div></div>
+    <p class="fine">Snow data from <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> weather models (no snow gauges): past days from ECMWF/ERA5 model analyses, the next 16 days from forecast models, and the rest of the winter from the ECMWF SEAS5 seasonal ensemble (51 runs). "Normal" is the average of the last 30 winters (Oct 1–Apr 30) from the ERA5 archive. Model totals often run lower than official snow-board measurements, especially in lake-effect and mountain spots, and season-long forecasts are rough guesses at best. For fun only.</p>
   </section>
 
   <section id="radar" class="panel">

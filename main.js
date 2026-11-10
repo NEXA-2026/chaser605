@@ -147,6 +147,208 @@
       .then(function () { clearTimeout(t); });
   }
 
+  function fetchJSONTimeout(url, ms) {
+    var ctl = window.AbortController ? new AbortController() : null;
+    var t = setTimeout(function () { ctl && ctl.abort(); }, ms);
+    return fetch(url, { signal: ctl ? ctl.signal : undefined, cache: 'no-store' })
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function (j) { clearTimeout(t); return j; }, function (e) { clearTimeout(t); throw e; });
+  }
+
+  /* ---------- Snow outlook (Open-Meteo: forecast + ERA5 archive + ECMWF SEAS5 seasonal), same visitor location as radar ---------- */
+  function initSnow() {
+    var body = $('#snow-body'), placeEl = $('#snow-place'), tok = 0, lastKey = null, defaultTimer = null;
+    var MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    function toIn(v, unit) { if (v == null) return null; return unit === 'inch' ? v : unit === 'mm' ? v / 25.4 : v / 2.54; }
+    function ds(d) { return d.toISOString().slice(0, 10); }               // Date (UTC) -> 'YYYY-MM-DD'
+    function pd(s) { return new Date(Date.UTC(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10))); }
+    function addDays(s, n) { var d = pd(s); d.setUTCDate(d.getUTCDate() + n); return ds(d); }
+    function dayDiff(a, b) { return Math.round((pd(b) - pd(a)) / 864e5); }
+    function nice(s) { return MON[+s.slice(5, 7) - 1] + ' ' + (+s.slice(8, 10)); }
+    function fmt(v) { return v == null || !isFinite(v) ? '--' : v < 9.95 ? v.toFixed(1) : String(Math.round(v)); }
+    function inSeasonMD(md) { var m = +md.slice(0, 2); return m >= 10 || m <= 4; }
+    function quant(a, q) { if (!a.length) return null; var s = a.slice().sort(function (x, y) { return x - y; }), p = (s.length - 1) * q, i = Math.floor(p); return s[i] + (s[Math.min(i + 1, s.length - 1)] - s[i]) * (p - i); }
+    function om(host, path, q) { return fetchJSONTimeout('https://' + host + '/v1/' + path + '?' + q, 15000).then(function (j) { if (j && j.error) throw new Error(j.reason); return j; }); }
+    function series(j) { // -> { 'YYYY-MM-DD': inches }
+      var out = {}, t = j.daily.time, v = j.daily.snowfall_sum, u = j.daily_units.snowfall_sum;
+      for (var i = 0; i < t.length; i++) { var x = toIn(v[i], u); if (x != null) out[t[i]] = x; }
+      return out;
+    }
+    function store(k, v) { try { localStorage.setItem(k, JSON.stringify({ t: Date.now(), v: v })); } catch (e) { /* private mode / full */ } }
+    function recall(k, maxAge) { try { var o = JSON.parse(localStorage.getItem(k)); return o && Date.now() - o.t < maxAge ? o.v : null; } catch (e) { return null; } }
+
+    // 30-winter normal from the ERA5 archive (cached in the browser for 30 days: it's the heaviest request).
+    function climatology(lat, lon, lastSeasonEndYear) {
+      var key = 'c605-snowclim-v1:' + lat + ',' + lon + ':' + lastSeasonEndYear, hit = recall(key, 30 * 864e5);
+      if (hit) return Promise.resolve(hit);
+      return om('archive-api.open-meteo.com', 'archive', 'latitude=' + lat + '&longitude=' + lon + '&start_date=' + (lastSeasonEndYear - 30) +
+        '-10-01&end_date=' + lastSeasonEndYear + '-04-30&daily=snowfall_sum&timezone=auto').then(function (j) {
+        var t = j.daily.time, v = j.daily.snowfall_sum, u = j.daily_units.snowfall_sum, seasons = {}, days = {}, sum = {}, cnt = {};
+        for (var i = 0; i < t.length; i++) {
+          var md = t[i].slice(5), x = toIn(v[i], u);
+          if (!inSeasonMD(md) || x == null) continue;
+          var y = +t[i].slice(0, 4), s = +md.slice(0, 2) >= 10 ? y : y - 1;
+          seasons[s] = (seasons[s] || 0) + x; days[s] = (days[s] || 0) + 1;
+          sum[md] = (sum[md] || 0) + x; cnt[md] = (cnt[md] || 0) + 1;
+        }
+        var totals = [], years = [], daymean = {};
+        Object.keys(seasons).forEach(function (s) { if (days[s] >= 205) { totals.push(seasons[s]); years.push(+s); } });
+        if (totals.length < 20) throw new Error('short climatology');
+        Object.keys(sum).forEach(function (md) { daymean[md] = sum[md] / cnt[md]; });
+        var hi = 0, lo = 0;
+        totals.forEach(function (x, i) { if (x > totals[hi]) hi = i; if (x < totals[lo]) lo = i; });
+        var c = { mean: totals.reduce(function (a, b) { return a + b; }, 0) / totals.length, n: totals.length, from: years[0], to: years[years.length - 1] + 1,
+          hi: { y: years[hi], v: totals[hi] }, lo: { y: years[lo], v: totals[lo] }, daymean: daymean };
+        store(key, c);
+        return c;
+      });
+    }
+    function normalBetween(clim, a, b) { // sum of daily normals for dates a..b inclusive
+      var s = 0; if (!clim) return null;
+      for (var d = a; d <= b; d = addDays(d, 1)) s += clim.daymean[d.slice(5)] || 0;
+      return s;
+    }
+    function seasonLabel(y) { return y + '–' + String(y + 1).slice(2); }
+
+    function render(o) {
+      var c = o.clim, normal = c ? c.mean : null;
+      var html = '';
+      var tinyNormal = c && normal < 0.5, nothing = o.toDate < 0.05 && o.next16 < 0.05 && (!o.pred || o.pred.mean < 0.3);
+      if (tinyNormal && nothing) {
+        body.innerHTML = '<div class="card snow-none"><h3>☀️ Snow? Around here?</h3><p>The only flakes in this town are on the breakfast menu. ' +
+          'A normal winter here brings <strong>' + fmt(normal) + ' in</strong> of snow (30-winter average), there\'s been <strong>' + fmt(o.toDate) + ' in</strong> ' +
+          (o.post ? 'last season' : 'so far this season') + ', and none is in the ' + (o.post ? 'books' : '16-day forecast') + '. Grab the sunscreen, not the shovel. 🕶️</p>' +
+          '<p class="muted">Want snow? Head north — the radar\'s below if you\'re hunting for some.</p></div>';
+        return;
+      }
+      // stat cards
+      var cards = '';
+      cards += '<div class="card snow-stat"><span class="tagchip actual">ACTUAL</span><h3>' + (o.post ? 'Last season total' : 'So far this season') + '</h3>' +
+        '<div class="snow-big">' + fmt(o.toDate) + '<small> in</small></div><p class="snow-meta">' +
+        (o.post ? 'Oct 1 – Apr 30, ' + seasonLabel(o.sy) : 'Oct 1 – ' + nice(o.lastActual)) +
+        (c && !o.post ? '<br>Normal by now: ' + fmt(o.normalToDate) + ' in' : '') + '</p></div>';
+      cards += '<div class="card snow-stat"><span class="tagchip avg">30-YR AVERAGE</span><h3>Normal season</h3>' +
+        (c ? '<div class="snow-big">' + fmt(normal) + '<small> in</small></div><p class="snow-meta">Average of ' + c.n + ' winters, ' + seasonLabel(c.from) + ' to ' + seasonLabel(c.to - 1) +
+          '<br>Snowiest: ' + seasonLabel(c.hi.y) + ' (' + fmt(c.hi.v) + ' in) · Least: ' + seasonLabel(c.lo.y) + ' (' + fmt(c.lo.v) + ' in)</p>'
+          : '<p class="snow-meta">Historical average couldn\'t load right now.</p>') + '</div>';
+      if (o.post) {
+        var nxt = o.sy + 1;
+        cards += '<div class="card snow-stat"><span class="tagchip fc">COMING UP</span><h3>Next season</h3><div class="snow-big snow-mid">Oct 1</div><p class="snow-meta">' +
+          seasonLabel(nxt) + ' snow tracking starts Oct 1. ' + (c ? 'Last season was <strong>' + Math.round(o.toDate / normal * 100) + '%</strong> of normal.' : '') + '</p></div>';
+      } else if (o.pred) {
+        cards += '<div class="card snow-stat is-fc"><span class="tagchip fc">FORECAST</span><h3>Predicted season total</h3><div class="snow-big">' + fmt(o.pred.mean) + '<small> in</small></div>' +
+          '<p class="snow-meta">Likely range ' + fmt(o.pred.p25) + '–' + fmt(o.pred.p75) + ' in (middle half of ' + o.pred.n + ' model runs)<br>' +
+          'So far + next 16 days + seasonal model' + (o.pred.tailDays ? ' (+ normal for the last ' + o.pred.tailDays + ' days)' : '') + '</p></div>';
+      } else {
+        cards += '<div class="card snow-stat is-fc"><span class="tagchip fc">FORECAST</span><h3>Next 16 days</h3><div class="snow-big">' + fmt(o.next16) + '<small> in</small></div>' +
+          '<p class="snow-meta">' + nice(o.today) + ' – ' + nice(o.fcEnd) + '<br>The season-long forecast model didn\'t answer, so no full-season prediction right now.</p></div>';
+      }
+      // outlook line
+      var line = '';
+      if (o.post) {
+        line = c ? (o.toDate >= normal * 1.15 ? '📈 Last winter came in <strong>above normal</strong>.' : o.toDate <= normal * 0.85 ? '📉 Last winter came in <strong>below normal</strong>.' : '↔️ Last winter landed <strong>near normal</strong>.') : '';
+        line += ' Snow season is on break — the chart below is last winter\'s week-by-week actuals.';
+      } else if (o.pred && c && normal >= 0.5) {
+        var pct = Math.round(o.pred.mean / normal * 100);
+        var cat = pct >= 115 ? ['📈', 'ABOVE normal'] : pct <= 85 ? ['📉', 'BELOW normal'] : ['↔️', 'NEAR normal'];
+        line = cat[0] + ' Season outlook: leaning <strong>' + cat[1] + '</strong> — about ' + pct + '% of a normal winter (forecast).';
+      } else if (c && normal >= 0.5) {
+        var d = o.toDate + o.next16 - normalBetween(c, o.start, o.fcEnd);
+        line = (d >= 0 ? '📈 Running ahead of normal' : '📉 Running behind normal') + ' through ' + nice(o.fcEnd) + ' (actual so far + 16-day forecast vs. average), by ' + fmt(Math.abs(d)) + ' in.';
+      }
+      if (!o.post) line += ' Next 16 days: <strong>' + fmt(o.next16) + ' inches</strong> forecast' + (o.next16 < 0.05 ? ' — nada.' : '.');
+      if (c && normal < 3) line += ' Snow is a rare visitor here, so every flake counts. ❄️';
+      else if (!o.post && o.toDate < 0.05 && o.next16 < 0.05) line += ' The snow hasn\'t clocked in yet — the shovels are on standby.';
+      html += '<div class="snow-cards">' + cards + '</div>' + (line ? '<p class="snow-line">' + line + '</p>' : '');
+      // weekly chart
+      var W = o.weeks, max = 1;
+      W.forEach(function (w) { max = Math.max(max, w.act + w.fc, w.norm || 0); });
+      var bars = W.map(function (w) {
+        var tot = w.act + w.fc, h = function (v) { return (v / max * 100).toFixed(1) + '%'; };
+        var cls = w.kind, tip = nice(w.start) + '–' + nice(w.end) + ': ' +
+          (w.kind === 'future' ? 'beyond the 16-day forecast' : [w.kind !== 'fc' ? fmt(w.act) + ' in actual' : '', w.kind !== 'past' ? fmt(w.fc) + ' in forecast' : ''].filter(Boolean).join(' + ')) +
+          (w.norm != null ? ' · normal ' + fmt(w.norm) + ' in' : '');
+        return '<div class="wk ' + cls + (w.isNow ? ' now' : '') + '" title="' + esc(tip) + '"><div class="wk-col">' +
+          (w.kind !== 'future' && tot >= 0.05 ? '<span class="wk-val">' + fmt(tot) + '</span>' : '') +
+          '<span class="wk-bar fc" style="height:' + h(w.fc) + '"></span><span class="wk-bar act" style="height:' + h(w.act) + '"></span>' +
+          (w.norm != null ? '<span class="wk-norm" style="bottom:' + h(w.norm) + '"></span>' : '') +
+          '</div><span class="wk-lab">' + (w.isNow ? 'NOW' : nice(w.start)) + '</span></div>';
+      }).join('');
+      html += '<div class="card snow-chart-card"><h3>Weekly snow, winter ' + seasonLabel(o.sy) + '</h3>' +
+        '<div class="snow-legend"><span><i class="lg act"></i>Actual</span>' + (o.post ? '' : '<span><i class="lg fc"></i>Forecast</span>') +
+        (c ? '<span><i class="lg norm"></i>Normal for that week</span>' : '') + '<span class="muted">Inches per week (Oct 1 – Apr 30)' + (o.post ? '' : ' · blank weeks are past the 16-day forecast') + '</span></div>' +
+        '<div class="snow-chart" role="img" aria-label="' + esc('Weekly snowfall bar chart for winter ' + seasonLabel(o.sy) + '. ' + fmt(o.toDate) + ' inches actual so far' + (o.post ? '' : ', ' + fmt(o.next16) + ' inches forecast in the next 16 days') + '.') + '">' + bars + '</div></div>';
+      body.innerHTML = html;
+      var nowEl = body.querySelector('.wk.now'), ch = body.querySelector('.snow-chart');
+      if (nowEl && ch && ch.scrollWidth > ch.clientWidth) ch.scrollLeft = Math.max(0, nowEl.offsetLeft - ch.clientWidth / 2);
+    }
+
+    function load(lat, lon, how, place) {
+      clearTimeout(defaultTimer);
+      lat = +(+lat).toFixed(2); lon = +(+lon).toFixed(2);
+      var key = lat + ',' + lon;
+      setPlace(place || (how === 'default' ? 'Sioux Falls, SD' : 'your area'), how);
+      if (key === lastKey) return;
+      lastKey = key;
+      var t = ++tok;
+      body.innerHTML = '<div class="card"><p class="muted">❄️ Counting snowflakes…</p></div>';
+      var q = 'latitude=' + lat + '&longitude=' + lon + '&daily=snowfall_sum&timezone=auto';
+      om('api.open-meteo.com', 'forecast', q + '&past_days=92&forecast_days=16').then(function (fj) {
+        var fs = series(fj), ft = fj.daily.time, today = ft[ft.length - 16], fcEnd = ft[ft.length - 1];
+        var y = +today.slice(0, 4), m = +today.slice(5, 7), post = m >= 5 && m <= 9;
+        var sy = m >= 10 ? y : y - 1, start = sy + '-10-01', end = (sy + 1) + '-04-30';
+        var lastActual = post ? end : addDays(today, -1), lastClimYear = post ? sy : sy; // last complete winter ends Apr 30 of `sy`
+        var need = start < ft[0] ? om('archive-api.open-meteo.com', 'archive', q + '&start_date=' + start + '&end_date=' + (addDays(ft[0], -1) < end ? addDays(ft[0], -1) : end)).then(series) : Promise.resolve({});
+        var clim = climatology(lat, lon, lastClimYear).catch(function () { return null; });
+        var seas = post ? Promise.resolve(null) : om('seasonal-api.open-meteo.com', 'seasonal', 'latitude=' + lat + '&longitude=' + lon + '&daily=snowfall_sum&forecast_days=210').catch(function () { return null; });
+        return Promise.all([need, clim, seas]).then(function (r) {
+          if (t !== tok) return;
+          var arch = r[0], c = r[1], sj = r[2], val = function (d) { return d in fs ? fs[d] : d in arch ? arch[d] : null; };
+          var toDate = 0, gaps = 0;
+          for (var d = start; d <= lastActual; d = addDays(d, 1)) { var v = val(d); if (v == null) gaps++; else toDate += v; }
+          var fcLast = fcEnd < end ? fcEnd : end, next16 = 0;
+          if (!post) for (d = today; d <= fcLast; d = addDays(d, 1)) next16 += fs[d] || 0;
+          var pred = null;
+          if (sj && sj.daily && !post) {
+            var u = sj.daily_units.snowfall_sum, st = sj.daily.time, mem = Object.keys(sj.daily).filter(function (k) { return /^snowfall_sum/.test(k); });
+            var after = addDays(fcLast, 1), lastSeas = st[st.length - 1], tail = 0, tailDays = 0;
+            if (lastSeas < end && c) { tail = normalBetween(c, addDays(lastSeas, 1), end); tailDays = dayDiff(lastSeas, end); }
+            var tots = mem.map(function (k) {
+              var s = 0, arr = sj.daily[k];
+              for (var i = 0; i < st.length; i++) if (st[i] >= after && st[i] <= end && arr[i] != null) s += toIn(arr[i], u);
+              return toDate + next16 + s + tail;
+            }).filter(isFinite);
+            if (tots.length && (lastSeas >= end || c)) pred = { mean: tots.reduce(function (a, b) { return a + b; }, 0) / tots.length, p25: quant(tots, 0.25), p75: quant(tots, 0.75), n: tots.length, tailDays: tailDays };
+          }
+          // weekly buckets: 7-day blocks from Oct 1 through Apr 30
+          var weeks = [];
+          for (var ws = start; ws <= end; ws = addDays(ws, 7)) {
+            var we = addDays(ws, 6) < end ? addDays(ws, 6) : end, act = 0, fc = 0, hasAct = false, hasFc = false;
+            for (d = ws; d <= we; d = addDays(d, 1)) {
+              if (d <= lastActual) { var a = val(d); if (a != null) { act += a; hasAct = true; } }
+              else if (!post && d <= fcLast && d in fs) { fc += fs[d]; hasFc = true; }
+            }
+            weeks.push({ start: ws, end: we, act: act, fc: fc, norm: c ? normalBetween(c, ws, we) : null,
+              kind: hasAct && !hasFc ? 'past' : hasFc && !hasAct ? 'fc' : hasFc ? 'mix' : ws > lastActual ? 'future' : 'past',
+              isNow: !post && today >= ws && today <= we });
+          }
+          render({ clim: c, toDate: toDate, normalToDate: c ? normalBetween(c, start, lastActual) : null, next16: next16, pred: pred, weeks: weeks,
+            today: today, fcEnd: fcLast, lastActual: lastActual, start: start, sy: sy, post: post, gaps: gaps });
+        });
+      }).catch(function () {
+        if (t !== tok) return;
+        lastKey = null;
+        body.innerHTML = '<div class="card"><p>❄️ The snow data got lost in a whiteout. Try refreshing in a bit, or check the <a href="https://forecast.weather.gov/MapClick.php?lat=' + lat + '&lon=' + lon + '" target="_blank" rel="noopener">NWS forecast</a>.</p></div>';
+      });
+    }
+    function setPlace(place, how) {
+      placeEl.textContent = place + (how === 'ip' ? ' (approx.)' : how === 'default' ? ' (default)' : '');
+    }
+    // If no location arrives (e.g. the visitor never answers the location prompt), fall back to Sioux Falls.
+    defaultTimer = setTimeout(function () { if (lastKey == null) load(SF_LAT, SF_LON, 'default'); }, 12000);
+    return { load: load, setPlace: setPlace };
+  }
+
   /* ---------- Live radar (Leaflet + RainViewer, with motion-extrapolation nowcast) + visitor location ---------- */
   function initRadar() {
     var statusEl = $('#radar-status'), timeEl = $('#radar-time'), playBtn = $('#radar-play'),
@@ -154,6 +356,7 @@
     if (typeof L === 'undefined') {
       statusEl.textContent = 'The radar map couldn\'t load. Try refreshing, or see radar.weather.gov.';
       playBtn.disabled = locBtn.disabled = slider.disabled = true;
+      if (Snow) Snow.load(SF_LAT, SF_LON, 'default');
       return;
     }
     var ZOOM = 6;
@@ -446,24 +649,19 @@
         statusEl.innerHTML = '📍 Radar centered on <strong>' + esc(place) + '</strong> <span class="muted">(' + src + ')</span>' + (permNote ? ' <span class="muted">' + esc(permNote) + '</span>' : '');
       };
       describe(guessedPlace || (how === 'default' ? 'Sioux Falls, SD' : 'your area'));
+      if (Snow) Snow.load(lat, lon, how, guessedPlace);
       if (how === 'default') { return; }
       // Update the forecast to the visitor's spot (NWS covers the US). Alerts stay SD-wide.
       var inUS = lat > 17 && lat < 72 && lon > -180 && lon < -64; // skip the NWS call (404) for clearly non-US spots
       (inUS ? loadWeather(lat, lon, how === 'ip' ? 'near you (approx.)' : 'near you') : Promise.reject(new Error('non-US'))).then(function (place) {
         if (place) describe(place, true);
+        if (place && Snow && token === locToken) Snow.setPlace(place, how);
       }).catch(function () {
         // Outside NWS coverage: keep Sioux Falls forecast, radar still shows the visitor's area.
         if (token !== locToken) return;
         loadDefaultWeather();
         $('#wx-place').textContent = 'Sioux Falls, SD · NWS forecasts cover the US only';
       });
-    }
-    function fetchJSONTimeout(url, ms) {
-      var ctl = window.AbortController ? new AbortController() : null;
-      var t = setTimeout(function () { ctl && ctl.abort(); }, ms);
-      return fetch(url, { signal: ctl ? ctl.signal : undefined, cache: 'no-store' })
-        .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
-        .then(function (j) { clearTimeout(t); return j; }, function (e) { clearTimeout(t); throw e; });
     }
     function ipLocate() {
       var ok = function (lat, lon, city, region) {
@@ -511,5 +709,7 @@
     locate(false);
   }
 
+  var Snow = null;
+  try { Snow = initSnow(); } catch (e) { /* snow section is optional */ }
   loadDefaultWeather(); loadAlerts(); loadGallery(); checkRealChaser(); initRadar();
 })();
