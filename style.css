@@ -159,3 +159,16 @@ footer p{max-width:44rem;margin:.4rem auto}
   .wk{flex:0 0 24px}
   .wk-col{height:150px}
 }
+
+/* theme song player */
+.theme-song{margin:0 auto 1.5rem;width:min(92vw,600px);text-align:left;scroll-margin-top:70px}
+.theme-song .theme-head{display:flex;justify-content:space-between;align-items:flex-start;gap:.7rem;margin:0 0 .2rem}
+.theme-song h2{font-size:clamp(1.15rem,3.4vw,1.45rem);margin:0;color:var(--ink);text-shadow:none;line-height:1.2;flex:1}
+.theme-song .theme-genre{font-size:.85em;color:var(--red);white-space:nowrap}
+.theme-song .theme-len{font-family:'Special Elite',monospace;font-size:.95rem;opacity:.8;white-space:nowrap;padding-top:.2rem;font-variant-numeric:tabular-nums}
+.theme-song .theme-meta{margin:0 0 .75rem;font-family:'Special Elite',monospace;font-size:.9rem;opacity:.85}
+.theme-song audio{display:block;width:100%;height:44px;accent-color:var(--red);border-radius:6px}
+@media (max-width:720px){
+  .theme-song{width:min(92vw,600px);padding:.85rem 1rem 1rem}
+  .theme-song h2{font-size:1.15rem}
+}
