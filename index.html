@@ -25,6 +25,7 @@
     <a href="#weather">Weather</a>
     <a href="#snow">Snow</a>
     <a href="#radar">Radar</a>
+    <a href="#cams">Cams</a>
     <a href="#gallery">Gallery</a>
     <a href="#upload">Upload</a>
     <a href="#about">About</a>
@@ -95,6 +96,22 @@
       </div>
       <p class="fine radar-fine">Last hour of observed radar from <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a>, then a <strong>forecast</strong> for the next hour (amber slider). The forecast just slides the latest radar forward along how the storms have been moving — a simple estimate, not a guarantee. Storms grow, fade, split and change direction, so it fades out the further ahead it looks. Always follow official NWS warnings. If there isn't enough rain nearby to track, steering winds from <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> are used. Location stays in your browser and is never stored. On mobile, use two fingers to move the map.</p>
     </div>
+  </section>
+
+  <section id="cams" class="panel">
+    <h2 class="rye">Live Cams</h2>
+    <p class="sub">Peek at the sky right now — public weather &amp; road cams · <span id="cams-place">Finding your spot…</span></p>
+    <form id="cams-search" class="card cams-search" role="search" autocomplete="off">
+      <label class="sr-only" for="cams-q">Search live cams by city, town or highway</label>
+      <input id="cams-q" type="search" placeholder="Search a city, town or highway — e.g. Denver, Rapid City, I-90" enterkeyhint="search">
+      <button class="btn btn-sm" type="submit">🔍 Search</button>
+      <button id="cams-near" class="btn btn-sm cams-near" type="button">📍 Near me</button>
+    </form>
+    <div id="cams-viewer" class="card cams-viewer" hidden></div>
+    <p id="cams-status" class="cams-status" aria-live="polite">📷 Looking for cams near you…</p>
+    <div id="cams-grid" class="cams-grid"></div>
+    <div id="cams-extra" class="cams-extra"></div>
+    <p class="fine">Cams belong to their owners and are shown straight from them: still images from the <a href="https://www.sd511.org/" target="_blank" rel="noopener">South Dakota DOT (SD511)</a>, <a href="https://www.511mt.net/" target="_blank" rel="noopener">Montana DOT (511)</a>, <a href="https://webcams.nyctmc.org/" target="_blank" rel="noopener">NYC DOT</a> and the <a href="https://mesonet.agron.iastate.edu/current/webcam.php" target="_blank" rel="noopener">Iowa Environmental Mesonet</a> (Iowa TV &amp; ISU sky cams), plus public 24/7 YouTube live streams. Coverage is best in the Dakotas, Montana, Iowa and New York City; elsewhere the YouTube search link finds more. Still cams refresh every few minutes; a stream may go offline at any time. Place search by <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>. For fun only — not for travel or safety decisions.</p>
   </section>
 
   <section id="gallery" class="panel">

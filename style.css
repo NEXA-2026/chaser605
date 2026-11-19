@@ -172,3 +172,56 @@ footer p{max-width:44rem;margin:.4rem auto}
   .theme-song{width:min(92vw,600px);padding:.85rem 1rem 1rem}
   .theme-song h2{font-size:1.15rem}
 }
+
+/* live cams */
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.cams-search{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;padding:.8rem;margin-bottom:1rem}
+.cams-search input{flex:1 1 240px;min-width:0;font:inherit;font-size:1rem;color:var(--ink);background:#fff8e6;border:3px solid var(--wood);border-radius:6px;padding:.5rem .7rem;box-shadow:inset 0 2px 4px #0003}
+.cams-search input:focus{outline:3px solid var(--bolt);outline-offset:1px}
+.cams-near{background:linear-gradient(#5b3a20,var(--wood2))}
+.cams-status{margin:.2rem 0 .8rem;font-size:1rem}
+.cams-status .muted{font-size:.85rem}
+.cams-group{margin:0 0 1.2rem}
+.cams-group h3{font-family:'Rye',serif;font-weight:400;color:var(--bolt);margin:.2rem 0 .6rem;font-size:1.15rem;text-shadow:1px 1px 0 #000}
+.cams-grid .grid{grid-template-columns:repeat(auto-fill,minmax(220px,1fr))}
+.cam-tile{position:relative;display:block;width:100%;padding:0;border:4px solid var(--wood);border-radius:6px;background:var(--wood2);cursor:pointer;overflow:hidden;aspect-ratio:16/10;box-shadow:0 6px 16px #0009;font:inherit;color:inherit;text-align:left}
+.cam-tile img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .3s;background:#1b2336}
+.cam-tile:hover img{transform:scale(1.05)}
+.cam-tile:focus-visible{outline:3px solid var(--bolt);outline-offset:2px}
+.cam-tile.is-on{border-color:var(--bolt)}
+.cam-tile .cap{position:absolute;left:0;right:0;bottom:0;padding:1.6rem .6rem .45rem;background:linear-gradient(transparent,#000e);color:var(--parch);font-size:.85rem;line-height:1.25}
+.cam-tile .cap b{display:block;font-weight:600;font-size:.95rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cam-tile .cap small{display:block;opacity:.85;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cam-badge{position:absolute;top:8px;left:8px;font-family:'Rye',serif;font-size:.72rem;letter-spacing:.04em;padding:.1rem .45rem;border:2px solid #1a0f07;border-radius:4px;background:var(--parch);color:var(--ink);box-shadow:0 2px 0 #1a0f07}
+.cam-badge.live{background:var(--red);color:#fff}
+.cam-tile .play{position:absolute;top:42%;left:50%;transform:translate(-50%,-50%);font-size:1.6rem;background:#000a;border-radius:50%;width:52px;height:52px;display:grid;place-items:center;color:#fff;pointer-events:none}
+.cam-tile .err{position:absolute;inset:0;display:grid;place-items:center;color:var(--parch);font-size:.9rem;opacity:.8;padding-bottom:2rem}
+.cams-more{margin-top:.8rem}
+.cams-viewer{padding:.8rem;margin-bottom:1rem;scroll-margin-top:70px}
+.cams-viewer[hidden]{display:none}
+.cv-head{display:flex;justify-content:space-between;align-items:flex-start;gap:.8rem;margin-bottom:.6rem}
+.cv-head h3{margin:0;font-size:1.3rem;line-height:1.2}
+.cv-head p{margin:.15rem 0 0;font-size:.9rem;opacity:.85}
+.cv-close{flex:none;background:#0008;color:#fff;border:2px solid #1a0f07;border-radius:50%;width:38px;height:38px;font-size:1.1rem;cursor:pointer}
+.cv-stage{position:relative;background:#0e1420;border:4px solid var(--wood2);border-radius:6px;overflow:hidden;aspect-ratio:16/9;display:grid;place-items:center}
+.cv-stage img{width:100%;height:100%;object-fit:contain;display:block}
+.cv-stage iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
+.cv-stage .err{color:var(--parch);padding:1rem;text-align:center}
+.cv-bar{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin-top:.6rem;font-size:.9rem}
+.cv-bar .views{display:flex;flex-wrap:wrap;gap:.4rem}
+.cv-view{font:inherit;font-size:.85rem;padding:.25rem .6rem;border:2px solid var(--wood);border-radius:4px;background:#fff8e6;color:var(--ink);cursor:pointer}
+.cv-view[aria-pressed=true]{background:var(--wood);color:var(--parch)}
+.cv-bar .src{margin-left:auto;opacity:.85}
+.cams-extra .card{margin-top:.4rem}
+.cams-extra p{margin:.2rem 0}
+.cams-links{display:flex;flex-wrap:wrap;gap:.6rem;margin-top:.5rem}
+.cams-links .btn{font-size:.85rem;color:#fff}
+@media (max-width:720px){
+  .cams-search .btn{flex:1 1 40%}
+  .cams-grid .grid{grid-template-columns:repeat(2,1fr);gap:.6rem}
+  .cam-tile .cap{font-size:.75rem;padding:1.2rem .45rem .35rem}
+  .cam-tile .cap b{font-size:.82rem}
+  .cam-tile .play{top:45%;width:38px;height:38px;font-size:1.1rem}
+  .cam-badge{font-size:.62rem;top:5px;left:5px}
+  .cv-bar .src{margin-left:0;flex:1 1 100%}
+}

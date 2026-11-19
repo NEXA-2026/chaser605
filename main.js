@@ -349,6 +349,251 @@
     return { load: load, setPlace: setPlace };
   }
 
+  /* ---------- Live cams: nearby public weather/road cams + place search ---------- */
+  function initCams() {
+    var grid = $('#cams-grid'), statusEl = $('#cams-status'), viewer = $('#cams-viewer'), extra = $('#cams-extra'),
+        placeEl = $('#cams-place'), form = $('#cams-search'), qEl = $('#cams-q'), nearBtn = $('#cams-near');
+    if (!grid || !form) return null;
+    var SRC = {
+      sd: { name: 'SD DOT · SD511', url: 'https://www.sd511.org/' },
+      mt: { name: 'Montana DOT · 511', url: 'https://www.511mt.net/' },
+      nyc: { name: 'NYC DOT', url: 'https://webcams.nyctmc.org/' },
+      iem: { name: 'Iowa Environmental Mesonet', url: 'https://mesonet.agron.iastate.edu/current/webcam.php' },
+      yt: { name: 'YouTube', url: 'https://www.youtube.com/' }
+    };
+    var NEAR_MI = 150, STREAM_MI = 400, STILL_SHOW = 8;
+    var here = null, mode = 'near', defaultTimer = null, refreshTimer = null, reqTok = 0, lastQuery = '';
+    var STATES = { AL:'Alabama',AK:'Alaska',AZ:'Arizona',AR:'Arkansas',CA:'California',CO:'Colorado',CT:'Connecticut',DE:'Delaware',FL:'Florida',GA:'Georgia',HI:'Hawaii',ID:'Idaho',IL:'Illinois',IN:'Indiana',IA:'Iowa',KS:'Kansas',KY:'Kentucky',LA:'Louisiana',ME:'Maine',MD:'Maryland',MA:'Massachusetts',MI:'Michigan',MN:'Minnesota',MS:'Mississippi',MO:'Missouri',MT:'Montana',NE:'Nebraska',NV:'Nevada',NH:'New Hampshire',NJ:'New Jersey',NM:'New Mexico',NY:'New York',NC:'North Carolina',ND:'North Dakota',OH:'Ohio',OK:'Oklahoma',OR:'Oregon',PA:'Pennsylvania',RI:'Rhode Island',SC:'South Carolina',SD:'South Dakota',TN:'Tennessee',TX:'Texas',UT:'Utah',VT:'Vermont',VA:'Virginia',WA:'Washington',WV:'West Virginia',WI:'Wisconsin',WY:'Wyoming',DC:'District of Columbia' };
+
+    // Camera index (built from public DOT feeds + verified 24/7 YouTube streams) and Iowa cams fetched live from the IEM.
+    var indexP = null, iemP = null;
+    function loadIndex() {
+      if (!indexP) indexP = fetch('cams.json', { cache: 'no-cache' }).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }).then(function (d) {
+        var P = d.pfx || [];
+        return (d.cams || []).map(function (c) {
+          return { src: c.s, name: c.n, desc: c.d || '', region: c.r || '', lat: c.la, lon: c.lo, yt: c.yt || null,
+            views: (c.v || []).map(function (v) { return { label: v[0], url: v[1] >= 0 ? P[v[1]] + v[2] : v[2] }; }) };
+        });
+      }).catch(function () { indexP = null; return []; });
+      return indexP;
+    }
+    function loadIem() {
+      if (!iemP) iemP = fetchJSONTimeout('https://mesonet.agron.iastate.edu/geojson/webcam.geojson?network=KCCI', 8000).then(function (j) {
+        var now = Date.now();
+        return (j.features || []).filter(function (f) {
+          var t = Date.parse(f.properties && f.properties.utc_valid); return f.geometry && f.properties.cid && (!isFinite(t) || now - t < 3 * 3600e3);
+        }).map(function (f) {
+          var p = f.properties;
+          return { src: 'iem', name: p.name, desc: (p.county ? p.county + ' County, ' : '') + (p.state || 'IA'), region: p.state || 'IA',
+            lat: f.geometry.coordinates[1], lon: f.geometry.coordinates[0], yt: null,
+            views: [{ label: 'Live view', url: 'https://mesonet.agron.iastate.edu/data/camera/stills/' + encodeURIComponent(p.cid) + '.jpg' }] };
+        });
+      }).catch(function () { iemP = null; return []; });
+      return iemP;
+    }
+    function allCams() { return Promise.all([loadIndex(), loadIem()]).then(function (a) { return a[0].concat(a[1]); }); }
+
+    function miles(la1, lo1, la2, lo2) {
+      var r = Math.PI / 180, dLa = (la2 - la1) * r, dLo = (lo2 - lo1) * r;
+      var h = Math.sin(dLa / 2) * Math.sin(dLa / 2) + Math.cos(la1 * r) * Math.cos(la2 * r) * Math.sin(dLo / 2) * Math.sin(dLo / 2);
+      return 3958.8 * 2 * Math.asin(Math.min(1, Math.sqrt(h)));
+    }
+    function withDist(list, lat, lon) {
+      return list.map(function (c) { return { c: c, d: miles(lat, lon, c.lat, c.lon) }; }).sort(function (a, b) { return a.d - b.d; });
+    }
+    function fmtMi(d) { return d == null ? '' : d < 1 ? 'under 1 mi' : Math.round(d) + ' mi'; }
+    // DOT road-weather cams are full 4K snapshots (~0.5 MB), so tiles use a small copy from the free wsrv.nl image proxy
+    // (refreshed every 10 minutes); the full-size image only loads when a cam is opened. Falls back to the original if the proxy fails.
+    function thumbOf(c) {
+      if (c.yt) return 'https://i.ytimg.com/vi/' + c.yt + '/mqdefault.jpg';
+      var u = c.views[0].url;
+      if (c.src === 'sd' || c.src === 'mt') return 'https://wsrv.nl/?url=' + encodeURIComponent(u + '?t=' + Math.floor(Date.now() / 6e5)) + '&w=440&h=275&fit=cover&output=webp&q=70';
+      return u;
+    }
+
+    var cur = []; // items currently shown (for the viewer)
+    function tile(it, i) {
+      var c = it.c, live = !!c.yt;
+      return '<button type="button" class="cam-tile" data-i="' + i + '" aria-label="Watch ' + esc(c.name) + (it.d != null ? ', ' + esc(fmtMi(it.d)) + ' away' : '') + '">' +
+        '<img loading="lazy" decoding="async" alt="" src="' + esc(thumbOf(c)) + '"' + (c.yt ? '' : ' data-raw="' + esc(c.views[0].url) + '"') + '>' +
+        '<span class="cam-badge' + (live ? ' live' : '') + '">' + (live ? '● LIVE VIDEO' : '📷 STILL CAM') + '</span>' +
+        (live ? '<span class="play" aria-hidden="true">▶</span>' : '') +
+        '<span class="cap"><b>' + esc(c.name) + '</b><small>' + esc([c.yt ? c.desc.split(' · ')[0] : (c.desc || c.region), fmtMi(it.d)].filter(Boolean).join(' · ')) + '</small></span></button>';
+    }
+    function group(title, items, limit) {
+      if (!items.length) return '';
+      var start = cur.length; cur = cur.concat(items);
+      var h = '<div class="cams-group"><h3>' + title + '</h3><div class="grid">';
+      items.forEach(function (it, k) { h += k < limit ? tile(it, start + k) : ''; });
+      h += '</div>' + (items.length > limit ? '<button type="button" class="btn btn-sm cams-more" data-from="' + (start + limit) + '" data-to="' + (start + items.length) + '">Show ' + (items.length - limit) + ' more</button>' : '') + '</div>';
+      return h;
+    }
+    function ytSearchUrl(place) { return 'https://www.youtube.com/results?search_query=' + encodeURIComponent(place + ' live cam') + '&sp=EgJAAQ%253D%253D'; }
+    function linkOuts(place, note) {
+      return '<div class="card"><p>' + (note || '🎥 Want more? Lots of towns have live cams on YouTube.') + '</p><div class="cams-links">' +
+        '<a class="btn btn-sm" href="' + esc(ytSearchUrl(place)) + '" target="_blank" rel="noopener">▶ YouTube live cams: ' + esc(place) + '</a></div></div>';
+    }
+
+    // Show cams around a point. still = road/weather snapshot cams, streams = live video.
+    function render(lat, lon, label, how, matches) {
+      return allCams().then(function (list) {
+        if (!list.length) { statusEl.textContent = '📷 The cam list didn\'t load. Try refreshing in a bit.'; grid.innerHTML = ''; return; }
+        var sorted = withDist(list, lat, lon);
+        var still = sorted.filter(function (x) { return !x.c.yt && x.d <= NEAR_MI; }).slice(0, 40);
+        var streams = sorted.filter(function (x) { return x.c.yt && x.d <= STREAM_MI; }).slice(0, 8);
+        (matches || []).forEach(function (m) { // text matches (e.g. "I-90") that aren't already nearby
+          var key = m.c.name + m.c.lat; if (still.concat(streams).some(function (x) { return x.c.name + x.c.lat === key; })) return;
+          (m.c.yt ? streams : still).push(m);
+        });
+        var widened = false;
+        if (!still.length) { still = sorted.filter(function (x) { return !x.c.yt && x.d <= 500; }).slice(0, 4); widened = still.length > 0; }
+        var featured = streams.length < 2 ? sorted.filter(function (x) { return x.c.yt && x.d > STREAM_MI; }).slice(0, 4) : [];
+        cur = [];
+        var nStill = still.filter(function (x) { return x.d <= NEAR_MI; }).length, nVid = streams.filter(function (x) { return x.d <= NEAR_MI; }).length, nNear = nStill + nVid;
+        var vidTitle = nVid ? '● Live video near ' + esc(label) : '● Closest live video streams',
+            stillTitle = widened ? '📷 Closest road &amp; weather cams we have' : '📷 Road &amp; weather cams near ' + esc(label);
+        // nearest kind first: a local road cam beats a stream 300 miles away
+        var stillFirst = still.length && (!streams.length || still[0].d <= streams[0].d), gVid, gStill;
+        if (stillFirst) { gStill = group(stillTitle, still, STILL_SHOW); gVid = group(vidTitle, streams.slice(0, 6), 6); }
+        else { gVid = group(vidTitle, streams.slice(0, 6), 6); gStill = group(stillTitle, still, STILL_SHOW); }
+        grid.innerHTML = (stillFirst ? gStill + gVid : gVid + gStill) + group('● 24/7 live sky &amp; weather streams', featured, 4);
+        var src = how === 'gps' ? 'your device location' : how === 'ip' ? 'approximate, from your connection' : how === 'default' ? 'default' : how === 'search' ? 'search' : '';
+        statusEl.innerHTML = (nNear ? '📷 <strong>' + nNear + '</strong> live cam' + (nNear === 1 ? '' : 's') + ' within ' + NEAR_MI + ' mi of <strong>' + esc(label) + '</strong>'
+          : '📷 No public cams in our list within ' + NEAR_MI + ' mi of <strong>' + esc(label) + '</strong> yet' + (still.length || streams.length ? ' — here are the closest' : '')) +
+          (src ? ' <span class="muted">(' + src + ')</span>' : '') + '. Tap a cam to watch.';
+        extra.innerHTML = linkOuts(label, nNear ? null : '🎥 Your area may still have cams on YouTube — try this search:');
+      });
+    }
+
+    function showNear() {
+      if (!here) return;
+      mode = 'near';
+      placeEl.textContent = here.place + (here.how === 'ip' ? ' (approx.)' : here.how === 'default' ? ' (default)' : '');
+      render(here.lat, here.lon, here.place, here.how);
+    }
+    function load(lat, lon, how, place) {
+      clearTimeout(defaultTimer);
+      here = { lat: lat, lon: lon, how: how, place: place || (how === 'default' ? 'Sioux Falls, SD' : 'your area') };
+      if (mode === 'near') showNear();
+    }
+    function setPlace(place, how) {
+      if (!here || !place) return;
+      here.place = place; here.how = how || here.how;
+      if (mode === 'near') showNear();
+    }
+
+    // --- search: geocode the place with Open-Meteo, then list cams near it (plus any cams whose name matches) ---
+    function geocode(q) {
+      var parts = q.split(',').map(function (s) { return s.trim(); }), name = parts[0], hint = (parts[1] || '').toUpperCase();
+      return fetchJSONTimeout('https://geocoding-api.open-meteo.com/v1/search?count=10&language=en&format=json&name=' + encodeURIComponent(name), 8000).then(function (j) {
+        var r = j.results || []; if (!r.length) return null;
+        var full = STATES[hint] || hint;
+        var pick = (hint && r.filter(function (x) { return (x.admin1 || '').toUpperCase() === full.toUpperCase() || x.country_code === hint || (x.country || '').toUpperCase() === hint; })[0]) ||
+          r.filter(function (x) { return x.country_code === 'US'; })[0] || r[0];
+        var st = pick.country_code === 'US' ? Object.keys(STATES).filter(function (k) { return STATES[k] === pick.admin1; })[0] : null;
+        return { lat: pick.latitude, lon: pick.longitude, label: pick.name + (st ? ', ' + st : pick.admin1 ? ', ' + pick.admin1 : pick.country ? ', ' + pick.country : '') };
+      }).catch(function () { return null; });
+    }
+    function textMatches(list, q) {
+      var toks = q.toLowerCase().replace(/[,]/g, ' ').split(/\s+/).filter(function (t) { return t.length > 1; });
+      if (!toks.length) return [];
+      return list.filter(function (c) { var s = (c.name + ' ' + c.desc + ' ' + c.region).toLowerCase(); return toks.every(function (t) { return s.indexOf(t) >= 0; }); });
+    }
+    function search(q) {
+      q = q.trim(); if (!q) { showNear(); return; }
+      var tok = ++reqTok; mode = 'search'; lastQuery = q;
+      statusEl.textContent = '🔍 Searching for cams near “' + q + '”…';
+      Promise.all([geocode(q), allCams()]).then(function (a) {
+        if (tok !== reqTok) return;
+        var g = a[0], list = a[1], tm = textMatches(list, q);
+        if (g) {
+          placeEl.textContent = g.label + ' (search)';
+          return render(g.lat, g.lon, g.label, 'search', withDist(tm, g.lat, g.lon).slice(0, 30));
+        }
+        if (tm.length) {
+          var c0 = here || { lat: tm[0].lat, lon: tm[0].lon }, items = withDist(tm, c0.lat, c0.lon).slice(0, 40);
+          cur = [];
+          grid.innerHTML = group('● Live video matching “' + esc(q) + '”', items.filter(function (x) { return x.c.yt; }), 8) +
+            group('📷 Cams matching “' + esc(q) + '”', items.filter(function (x) { return !x.c.yt; }), STILL_SHOW);
+          statusEl.innerHTML = '🔍 <strong>' + tm.length + '</strong> cam' + (tm.length === 1 ? '' : 's') + ' matching “' + esc(q) + '”' + (here ? ' <span class="muted">(distances from you)</span>' : '') + '. Tap a cam to watch.';
+          extra.innerHTML = linkOuts(q);
+          return;
+        }
+        grid.innerHTML = '';
+        statusEl.innerHTML = '🔍 Couldn\'t find a place or cam called “' + esc(q) + '”. Try a city and state, like <em>Denver, CO</em>.';
+        extra.innerHTML = linkOuts(q, '🎥 Or try YouTube:');
+      });
+    }
+    form.addEventListener('submit', function (e) { e.preventDefault(); search(qEl.value); });
+    qEl.addEventListener('search', function () { if (!qEl.value.trim() && mode === 'search') showNear(); }); // the ✕ in the box
+    nearBtn.addEventListener('click', function () {
+      qEl.value = ''; mode = 'near';
+      if (here) showNear(); else statusEl.textContent = '📍 Finding your location…';
+      var rb = $('#radar-locate'); if (rb && (!here || here.how !== 'gps')) rb.click(); // ask for precise location (same as the radar button)
+    });
+
+    // --- viewer: lazy-loads the player only when a cam is tapped ---
+    function closeViewer() { clearInterval(refreshTimer); viewer.hidden = true; viewer.innerHTML = ''; grid.querySelectorAll('.cam-tile.is-on').forEach(function (b) { b.classList.remove('is-on'); }); }
+    function openCam(i, btn) {
+      var it = cur[i]; if (!it) return;
+      var c = it.c, s = SRC[c.src] || {};
+      clearInterval(refreshTimer);
+      grid.querySelectorAll('.cam-tile.is-on').forEach(function (b) { b.classList.remove('is-on'); });
+      if (btn) btn.classList.add('is-on');
+      var srcLink = c.yt ? '<a href="https://www.youtube.com/watch?v=' + esc(c.yt) + '" target="_blank" rel="noopener">Watch on YouTube</a> · ' + esc(c.desc.split(' · ')[1] || '')
+        : 'Cam: <a href="' + esc(s.url) + '" target="_blank" rel="noopener">' + esc(s.name) + '</a>';
+      viewer.innerHTML = '<div class="cv-head"><div><h3 class="rye">' + esc(c.name) + '</h3><p>' + esc([c.yt ? c.desc.split(' · ')[0] : c.desc || c.region, it.d != null ? fmtMi(it.d) + ' away' : ''].filter(Boolean).join(' · ')) + '</p></div>' +
+        '<button type="button" class="cv-close" aria-label="Close cam">✕</button></div>' +
+        '<div class="cv-stage"></div><div class="cv-bar"><div class="views"></div><span class="cv-time"></span><span class="src">' + srcLink + '</span></div>';
+      viewer.hidden = false;
+      var stage = viewer.querySelector('.cv-stage'), views = viewer.querySelector('.views'), timeEl = viewer.querySelector('.cv-time');
+      viewer.querySelector('.cv-close').addEventListener('click', closeViewer);
+      if (c.yt) {
+        stage.innerHTML = '<iframe src="https://www.youtube-nocookie.com/embed/' + encodeURIComponent(c.yt) + '?autoplay=1&mute=1&playsinline=1&rel=0" title="' + esc(c.name) + ' live stream" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>';
+        timeEl.textContent = '● Live video (muted — tap for sound)';
+      } else {
+        var vi = 0;
+        var show = function () {
+          var v = c.views[vi], img = new Image();
+          img.alt = c.name + ' — ' + v.label; img.decoding = 'async';
+          img.onload = function () { stage.innerHTML = ''; stage.appendChild(img); timeEl.textContent = '📷 ' + v.label + ' · checked ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + ' · refreshes every minute'; };
+          img.onerror = function () { stage.innerHTML = '<p class="err">📷 This camera is offline right now. Try another one.</p>'; timeEl.textContent = ''; };
+          img.src = v.url + (v.url.indexOf('?') < 0 ? '?' : '&') + 't=' + Math.floor(Date.now() / 60000);
+        };
+        if (c.views.length > 1) {
+          views.innerHTML = c.views.map(function (v, k) { return '<button type="button" class="cv-view" data-k="' + k + '" aria-pressed="' + (k === 0) + '">' + esc(v.label) + '</button>'; }).join('');
+          views.addEventListener('click', function (e) {
+            var b = e.target.closest('.cv-view'); if (!b) return;
+            vi = +b.getAttribute('data-k'); views.querySelectorAll('.cv-view').forEach(function (x) { x.setAttribute('aria-pressed', x === b); }); show();
+          });
+        }
+        stage.innerHTML = '<p class="err">Loading cam…</p>';
+        show();
+        refreshTimer = setInterval(function () { if (!viewer.hidden && !document.hidden) show(); }, 60000);
+      }
+      viewer.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    grid.addEventListener('click', function (e) {
+      var more = e.target.closest('.cams-more');
+      if (more) {
+        var from = +more.getAttribute('data-from'), to = +more.getAttribute('data-to'), h = '';
+        for (var k = from; k < to; k++) h += tile(cur[k], k);
+        more.previousElementSibling.insertAdjacentHTML('beforeend', h); more.remove(); return;
+      }
+      var b = e.target.closest('.cam-tile'); if (b) openCam(+b.getAttribute('data-i'), b);
+    });
+    // Hide thumbnails that fail to load (camera offline).
+    grid.addEventListener('error', function (e) {
+      var im = e.target;
+      if (im.tagName === 'IMG' && im.dataset.raw && im.src.indexOf('wsrv.nl') >= 0) { im.src = im.dataset.raw; return; }
+      if (e.target.tagName === 'IMG' && e.target.closest('.cam-tile')) { e.target.style.visibility = 'hidden'; e.target.insertAdjacentHTML('afterend', '<span class="err">📷 offline</span>'); }
+    }, true);
+
+    loadIndex(); loadIem(); // small, start early
+    defaultTimer = setTimeout(function () { if (!here) load(SF_LAT, SF_LON, 'default'); }, 12000);
+    return { load: load, setPlace: setPlace };
+  }
+
   /* ---------- Live radar (Leaflet + RainViewer, with motion-extrapolation nowcast) + visitor location ---------- */
   function initRadar() {
     var statusEl = $('#radar-status'), timeEl = $('#radar-time'), playBtn = $('#radar-play'),
@@ -650,12 +895,14 @@
       };
       describe(guessedPlace || (how === 'default' ? 'Sioux Falls, SD' : 'your area'));
       if (Snow) Snow.load(lat, lon, how, guessedPlace);
+      if (Cams) Cams.load(lat, lon, how, guessedPlace);
       if (how === 'default') { return; }
       // Update the forecast to the visitor's spot (NWS covers the US). Alerts stay SD-wide.
       var inUS = lat > 17 && lat < 72 && lon > -180 && lon < -64; // skip the NWS call (404) for clearly non-US spots
       (inUS ? loadWeather(lat, lon, how === 'ip' ? 'near you (approx.)' : 'near you') : Promise.reject(new Error('non-US'))).then(function (place) {
         if (place) describe(place, true);
         if (place && Snow && token === locToken) Snow.setPlace(place, how);
+        if (place && Cams && token === locToken) Cams.setPlace(place, how);
       }).catch(function () {
         // Outside NWS coverage: keep Sioux Falls forecast, radar still shows the visitor's area.
         if (token !== locToken) return;
@@ -711,5 +958,7 @@
 
   var Snow = null;
   try { Snow = initSnow(); } catch (e) { /* snow section is optional */ }
+  var Cams = null;
+  try { Cams = initCams(); } catch (e) { /* cams section is optional */ }
   loadDefaultWeather(); loadAlerts(); loadGallery(); checkRealChaser(); initRadar();
 })();
